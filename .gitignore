@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# SQLite test databases & undo logs
+*.db
+*.db-journal
+*.db-wal
+*_undo.sql
+*.sql.bak
+export.csv
+export.json
+export.sql
+export.md
+export.tsv
+
+# State & local configurations
+.local/
+.cache/
+.pytest_cache/
