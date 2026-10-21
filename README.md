@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20(standard%20library)-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20BSD-lightgrey.svg)]()
+[![Donate](https://img.shields.io/badge/Donate-PayPal-00457C.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+SQLTUI+Project)
 
 </div>
 
@@ -287,6 +288,13 @@ python3 test_sqlite_tui.py
 ## 📄 Documentation
 
 For the in-depth architectural breakdown, command menu specifications, and troubleshooting tips, see the [User Manual (MANUAL_SQLITE_TUI.md)](MANUAL_SQLITE_TUI.md).
+
+---
+
+## ❤️ Support
+
+If SQLTUI is useful to you, you can support development through
+[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+SQLTUI+Project).
 
 ---
 
