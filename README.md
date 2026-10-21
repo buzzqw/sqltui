@@ -3,7 +3,7 @@
 # 🗄️ SQLTUI (`sqlite-tui`)
 
 **Fast, keyboard-driven terminal SQLite explorer and editor.**  
-*Heavily inspired by [lazygit](https://github.com/jesseduffield/lazygit) and [sqlit](https://github.com/Maxteabag/sqlit).*
+*Heavily inspired by [lazygit](https://github.com/jesseduffield/lazygit).*
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)

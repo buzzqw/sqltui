@@ -1,7 +1,7 @@
 # User Manual: SQLite TUI (`sqlite-tui.py`)
 
 > **Modern, lightweight, zero-dependency SQLite terminal client.**  
-> Inspired by *lazygit* and *sqlit*, built for speed, visual clarity, and high productivity over local and remote SSH sessions.
+> Inspired by *lazygit*, built for speed, visual clarity, and high productivity over local and remote SSH sessions.
 
 ---
 
@@ -30,7 +30,7 @@
 `sqlite_tui.py` is an interactive visual database explorer and SQL manager for the command line.
 
 * **Zero External Dependencies:** Built solely with the **Python 3.8+ Standard Library** (`curses`, `sqlite3`, `csv`, `json`). No external packages or `pip install` required.
-* **Lazygit & sqlit Ergonomics:** 4 responsive panels reachable with keys `1`..`4`, Unicode rounded borders, illuminated active panel frame, and single-key zoom/fullscreen toggle (`z`).
+* **Lazygit Ergonomics:** 4 responsive panels reachable with keys `1`..`4`, Unicode rounded borders, illuminated active panel frame, and single-key zoom/fullscreen toggle (`z`).
 * **Bidirectional Foreign Key Navigation:** Jump through relational structures effortlessly (`f` forward to parent tables, `F` reverse to children records, `b` to navigate back).
 * **Data Safety via Automatic Undo SQL:** Any database modification (cell edits, row insertions, row deletions, table drops, CSV imports, or UPDATE/DELETE queries) automatically records an inverse SQL restoration script in `<database>_undo.sql`. Restore your data anytime with `u`.
 * **Full Terminal & Mouse Support:** Seamless over SSH and local terminal emulators with native mouse interaction (click to focus, double-click to open/edit, scroll wheel).
@@ -51,7 +51,7 @@
 # Open an existing SQLite database
 ./sqlite-tui.py my_database.db
 
-# Launch with interactive relational demo e-commerce database (sqlit mock style)
+# Launch with interactive relational demo e-commerce database
 ./sqlite-tui.py --demo
 
 # Open in read-only mode (prevents accidental mutations)

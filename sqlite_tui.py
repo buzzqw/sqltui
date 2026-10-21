@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sqlite_tui: terminal SQLite explorer and editor (designed for SSH).
 
-Inspired by lazygit and sqlit.
+Inspired by lazygit.
 Zero external dependencies: uses only Python standard library (curses and sqlite3).
 
 Usage:
@@ -187,7 +187,7 @@ THEMES = {
 }
 
 HELP_LINES = [
-    "# Global Shortcuts (lazygit / sqlit style)",
+    "# Global Shortcuts (lazygit style)",
     "  1           jump to Panel [1] Schema & Objects",
     "  2           jump to Panel [2] Columns & Table Info",
     "  3           jump to Panel [3] SQL Editor",
@@ -242,7 +242,7 @@ HELP_LINES = [
     "  x               export to CSV, JSON, SQL INSERT, Markdown Table, or TSV",
     "  PgUp / PgDn     change page                   p        jump to page number",
     "",
-    "# Relational FK Navigation & CLI Features (sqlit style)",
+    "# Relational FK Navigation & CLI Features",
     "  f / F           forward (outgoing) & reverse (incoming) foreign key relationship navigation",
     "  b / Backspace   back stack keeps full history of table, filter, and cursor position",
     "  --demo / --mock launches rich interactive relational e-commerce demo database",
@@ -657,7 +657,7 @@ def put(scr, y: int, x: int, text: str, attr: int = 0, w: Optional[int] = None) 
 
 def draw_box(scr, y: int, x: int, h: int, w: int, title: str = "", active: bool = False,
              count: Optional[int] = None, badge: str = "") -> None:
-    """Draws a lazygit/sqlit-style rounded border frame with title and focus status."""
+    """Draws a lazygit-style rounded border frame with title and focus status."""
     if h < 2 or w < 4:
         return
     border_attr = A["panel_active"] if active else A["panel_dim"]
@@ -1000,7 +1000,7 @@ def db_info(db: Db) -> list[str]:
 
 
 def populate_demo_db(db: Db) -> None:
-    """Populates an interactive, highly relational e-commerce demo database (sqlit mock style)."""
+    """Populates an interactive, highly relational e-commerce demo database."""
     c = db.conn
     c.execute("PRAGMA foreign_keys = ON")
     c.executescript("""
@@ -2583,7 +2583,7 @@ class App:
             choice = choice.lower()
         ed.replace_before(len(prefix), choice)
 
-    # ----- relational FK navigation (sqlit style) -------------------------
+    # ----- relational FK navigation ---------------------------------------
 
     def push_nav_state(self) -> None:
         if self.table:
@@ -3503,7 +3503,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         pass
     ap = argparse.ArgumentParser(
         prog=APP,
-        description="Rich, keyboard-driven terminal SQLite explorer & editor (lazygit/sqlit style)."
+        description="Rich, keyboard-driven terminal SQLite explorer & editor (lazygit style)."
     )
     ap.add_argument("database", nargs="?", default=":memory:",
                     help="SQLite database file (created if non-existent; defaults to in-memory)")
