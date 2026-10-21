@@ -14,7 +14,8 @@ Inside the application:
     T        switch theme (Tokyo Night, Nord, Gruvbox, Rosé Pine, Monokai, Classic)
     u        undo last change (applies automatically generated Undo SQL)
     i        statistical analysis & distribution of the current column
-    ? / F1   full help · F10 command menu
+    Ctrl+O   open database or SQL file · Ctrl+S save SQL script
+    F2       simple one-panel mode / 4-panel layout · ? / F1 help
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import pathlib
 import re
 import sqlite3
 import sys
+import textwrap
 import time
 import unicodedata
 from typing import Any, NamedTuple, Optional
@@ -44,6 +46,9 @@ HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".local", "state", APP, "hi
 HISTORY_MAX = 300
 USER_OBJECTS = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
 DEFAULT_SQL = "-- F5 executes all · F9 executes statement under cursor · F8 autocomplete\nSELECT name, type FROM sqlite_master;\n"
+SQLITE_EXTENSIONS = (".db", ".sqlite", ".sqlite3", ".db3", ".s3db", ".sqlite2")
+SQL_EXTENSIONS = (".sql",)
+OPEN_EXTENSIONS = SQLITE_EXTENSIONS + SQL_EXTENSIONS
 
 KEYWORDS = set("""
 ADD ALL ALTER ANALYZE AND AS ASC ATTACH AUTOINCREMENT BEGIN BETWEEN BLOB BY CASE CAST CHECK COLLATE COLUMN COMMIT CONFLICT
@@ -75,8 +80,16 @@ KEY_ENTER = {10, 13, curses.KEY_ENTER}
 KEY_BACK = {8, 127, curses.KEY_BACKSPACE}
 KEY_ESC = 27
 KEY_TAB = 9
-CTRL_A, CTRL_C, CTRL_D, CTRL_E, CTRL_F, CTRL_K, CTRL_P, CTRL_Q, CTRL_R, CTRL_U, CTRL_W, CTRL_Y, CTRL_Z = (
-    1, 3, 4, 5, 6, 11, 16, 17, 18, 21, 23, 25, 26
+MOUSE_B1 = (getattr(curses, "BUTTON1_CLICKED", 0) |
+            getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0) |
+            getattr(curses, "BUTTON1_PRESSED", 0))
+MOUSE_DBL = getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0)
+MOUSE_WHEEL_UP = (getattr(curses, "BUTTON4_PRESSED", 0) |
+                  getattr(curses, "BUTTON4_CLICKED", 0))
+MOUSE_WHEEL_DOWN = (getattr(curses, "BUTTON5_PRESSED", 0) |
+                    getattr(curses, "BUTTON5_CLICKED", 0))
+CTRL_A, CTRL_C, CTRL_D, CTRL_E, CTRL_F, CTRL_K, CTRL_O, CTRL_P, CTRL_Q, CTRL_R, CTRL_S, CTRL_U, CTRL_W, CTRL_Y, CTRL_Z = (
+    1, 3, 4, 5, 6, 11, 15, 16, 17, 18, 19, 21, 23, 25, 26
 )
 
 A: dict[str, int] = {}           # Drawing attributes (populated in init_ui)
@@ -192,12 +205,16 @@ HELP_LINES = [
     "  2           jump to Panel [2] Columns & Table Info",
     "  3           jump to Panel [3] SQL Editor",
     "  4           jump to Panel [4] Data & Results Grid",
-    "  Tab         cycle panels forward (Shift+Tab backward)",
+    "  Tab         cycle panels forward (Shift+Tab backward · F6 forward)",
     "  z           toggle maximize / restore active panel (Zoom)",
     "  T           switch theme (Tokyo Night, Nord, Gruvbox, Rosé Pine, Monokai, Classic)",
-    "  F10         command menu (open, export, import, transactions, VACUUM...)",
+    "  m / F10     command menu (open, export, import, transactions, VACUUM...)",
+    "  Ctrl+O      browse & open DB or SQL file (Enter open · p path · n new)",
+    "  Ctrl+S      save the SQL editor content to a .sql file",
+    "  F2          toggle simple mode (one panel) / 4-panel layout",
     "  Ctrl+Q      quit application",
-    "  Mouse       click to focus or select, double-click to open/edit, wheel to scroll",
+    "  Mouse       click tabs/menu items, double-click to open/edit, wheel to scroll",
+    "  Note        inside the SQL editor z/T/?/m type text; use F1/F6/F10 for actions",
     "",
     "# Panel [1]: Schema & Objects",
     "  arrows / j k    move          Enter   open table in data viewer",
@@ -218,11 +235,12 @@ HELP_LINES = [
     "  F5              execute entire script",
     "  F9              execute statement under cursor",
     "  F8              autocomplete keywords, functions, tables, and columns",
+    "  Ctrl+S          save the editor content to a .sql file",
     "  Ctrl+P          format / prettify SQL query with uppercase keywords",
     "  Ctrl+Z          undo                          Ctrl+R   redo",
     "  Ctrl+K          cut line                      Ctrl+Y   paste line",
     "  Ctrl+W          delete word backward          Ctrl+U   delete to start of line",
-    "  Tab             indent 4 spaces",
+    "  Tab             indent 4 spaces (Shift+Tab / F6 cycle panels)",
     "",
     "# Panel [4]: Data & Results Grid",
     "  arrows / hjkl   move                          g / G    go to top / bottom",
@@ -232,13 +250,15 @@ HELP_LINES = [
     "  e / Enter       edit cell [generates automatic Undo SQL]",
     "  Space           inspect full cell (formatted JSON view & hex viewer for BLOBs)",
     "  v               view formatted full record",
+    "  y               copy cell value to clipboard (OSC 52)",
     "  n               insert new row [generates automatic Undo SQL]",
     "  d / Del         delete row [generates automatic Undo SQL]",
     "  u               undo data change (runs automatically generated restore SQL)",
     "  i               statistical analysis of current column",
     "  o               sort by column (ascending / descending / clear sort)",
     "  /               search in query results (SQL) / WHERE filter (Data)",
-    "  n / N           next / previous search match",
+    "  Esc             clear the active filter or result search",
+    "  [ / ]           previous / next search match",
     "  x               export to CSV, JSON, SQL INSERT, Markdown Table, or TSV",
     "  PgUp / PgDn     change page                   p        jump to page number",
     "",
@@ -320,6 +340,13 @@ def pad_str(s: str, target_w: int, align: str = "left") -> str:
         return s
     pad = " " * (target_w - w)
     return s + pad if align == "left" else pad + s
+
+
+def wrap_text(text: str, width: int) -> list[str]:
+    """Word-wraps text to the given display width (used by modal dialogs)."""
+    if width <= 0:
+        return [text]
+    return textwrap.wrap(text, width=width, break_long_words=True, break_on_hyphens=False) or [""]
 
 
 def quote_ident(name: str) -> str:
@@ -412,6 +439,25 @@ def fmt_value(v: Any) -> str:
     if "\r" in s or "\n" in s or "\t" in s:
         return s.replace("\r", "").replace("\n", "\\n").replace("\t", "\\t")
     return s
+
+
+def short_path(path: str) -> str:
+    """Abbreviates the home directory with ~ for compact display."""
+    home = os.path.expanduser("~")
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
+def human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{n} B"
 
 
 def preview_len(v: Any, max_len: int = MAX_COL_WIDTH) -> int:
@@ -663,12 +709,27 @@ def draw_box(scr, y: int, x: int, h: int, w: int, title: str = "", active: bool 
     border_attr = A["panel_active"] if active else A["panel_dim"]
     title_attr = A["title_active"] if active else A["title_dim"]
 
-    title_str = f" {title} " if title else ""
-    if count is not None:
-        title_str = f" {title} ({count}) "
-    if badge:
-        title_str += f"[{badge}] "
+    # Compose title with optional count/badge, dropping decorations that do not fit.
+    base = f" {title} " if title else ""
+    count_part = f"({count})" if count is not None else ""
+    badge_part = f"[{badge}] " if badge else ""
 
+    def compose(include_count: bool, include_badge: bool) -> str:
+        if include_count and count_part:
+            text = f" {title} {count_part} "
+        else:
+            text = base
+        if include_badge:
+            text += badge_part
+        return text
+
+    title_str = compose(count is not None, bool(badge_part))
+    if str_width(title_str) > w - 6:
+        title_str = compose(count is not None, False)
+    if str_width(title_str) > w - 6:
+        title_str = compose(False, False)
+    if str_width(title_str) > w - 6:
+        title_str = fit_str(title_str, max(1, w - 6))
     t_len = str_width(title_str)
     top_left = "╭"
     top_right = "╮"
@@ -1339,7 +1400,8 @@ class Editor:
 
     def draw(self, scr, y: int, x: int, h: int, w: int, focused: bool) -> None:
         self.h = h
-        gutter = len(str(len(self.lines))) + 1
+        num_w = len(str(max(1, len(self.lines))))
+        gutter = num_w + 2                       # marker + line number + space
         tw = max(1, w - gutter)
         if self.cy < self.top:
             self.top = self.cy
@@ -1353,7 +1415,11 @@ class Editor:
             i = self.top + row
             if i >= len(self.lines):
                 break
-            put(scr, y + row, x, f"{i + 1:>{gutter - 1}} ", A["dim"], gutter)
+            current = i == self.cy
+            num_attr = A["tab_on"] if (current and focused) else (A["hdr"] if current else A["dim"])
+            put(scr, y + row, x, "▸" if current else " ", num_attr, 1)
+            put(scr, y + row, x + 1, f"{i + 1:>{num_w}}", num_attr, num_w)
+            put(scr, y + row, x + 1 + num_w, " ", num_attr, 1)
             draw_segments(scr, y + row, x + gutter, tw, tokenize(self.lines[i]), self.left)
         self.cursor = (y + self.cy - self.top, x + gutter + self.cx - self.left) if focused else None
 
@@ -1400,23 +1466,40 @@ class ColumnList:
     def draw(self, scr, y: int, x: int, h: int, w: int, focused: bool) -> None:
         self.h = h
         if not self.cols:
-            put(scr, y, x, "  (select a table to view columns)", A["dim"], w)
+            put(scr, y, x, "  (select a table in panel [1])", A["dim"], w)
             return
         if self.cy < self.top:
             self.top = self.cy
         if self.cy >= self.top + h:
             self.top = self.cy - h + 1
-        fk_map = {fk[3]: f"-> {fk[2]}.{fk[4] or 'id'}" for fk in self.fks}
+        fk_map = {fk[3]: f"{fk[2]}.{fk[4] or 'id'}" for fk in self.fks}
+        name_w = max(6, min(max(str_width(c.name) for c in self.cols), max(8, w // 3)))
+        type_w = max(6, min(12, w - name_w - 7))
+        show_notes = w >= 34
         for r in range(h):
             i = self.top + r
             if i >= len(self.cols):
                 break
             c = self.cols[i]
-            pk_badge = "🔑 " if c.pk else "   "
-            type_badge = c.type or "ANY"
-            fk_info = f" [{fk_map[c.name]}]" if c.name in fk_map else ""
-            nn_info = " [NN]" if c.notnull else ""
-            line_str = f"{pk_badge}{c.name} {type_badge}{nn_info}{fk_info}"
+            pk = "PK" if c.pk else "  "
+            name = pad_str(fit_str(c.name, name_w), name_w)
+            decl = pad_str(fit_str(c.type or "ANY", type_w), type_w)
+            line_str = f"{pk} {name} {decl}"
+            if show_notes:
+                notes = []
+                if c.notnull:
+                    notes.append("NOT NULL")
+                if c.default is not None:
+                    notes.append(f"={c.default}")
+                if c.name in fk_map:
+                    notes.append(f"→ {fk_map[c.name]}")
+                if notes:
+                    line_str += " " + " · ".join(notes)
+            else:
+                if c.name in fk_map and str_width(line_str) + 2 <= w:
+                    line_str += " →"
+                if c.notnull and str_width(line_str) + 3 <= w:
+                    line_str += " NN"
             attr = (A["sel"] if focused else A["underline"]) if i == self.cy else 0
             put(scr, y + r, x, pad_str(line_str, w), attr, w)
 
@@ -1436,22 +1519,30 @@ class Grid:
         self.search_query = ""
         self.search_matches: list[tuple[int, int]] = []
         self.search_idx = -1
+        self.table_mode = False
+        self.row_offset = 0
 
     def set_data(self, cols: list[str], rows: list[tuple], keep: bool = False,
                  col_types: Optional[dict[str, str]] = None, pks: Optional[set[str]] = None,
-                 fks: Optional[list[tuple]] = None) -> None:
+                 fks: Optional[list[tuple]] = None, table_mode: bool = False) -> None:
         self.cols, self.rows = cols, rows
         self._orig_rows = list(rows)
         self.col_types = col_types or {}
         self.pks = pks or set()
         self.fks = fks or []
+        self.table_mode = table_mode
         if not keep:
             self.cy = self.top = self.left = 0
         self.cy = max(0, min(self.cy, len(rows) - 1)) if rows else 0
         self.cx = max(0, min(self.cx, len(cols) - 1)) if cols else 0
         self.widths = []
         for i, c in enumerate(cols):
-            w = max(str_width(c) + 4, 6)
+            extra = 4
+            if c in self.pks:
+                extra += 3
+            if self.fk_for_col(c):
+                extra += 3
+            w = max(str_width(c) + extra, 6)
             for r in rows[:300]:
                 if w >= MAX_COL_WIDTH:
                     break
@@ -1556,67 +1647,91 @@ class Grid:
     def draw(self, scr, y: int, x: int, h: int, w: int, focused: bool) -> None:
         self.view_h = max(1, h - 1)
         if not self.cols:
-            put(scr, y, x, "(no results)", A["dim"], w)
+            put(scr, y, x, "  (no results — run a query with F5 or open a table with Enter)", A["dim"], w)
             return
         if self.cy < self.top:
             self.top = self.cy
         if self.cy >= self.top + self.view_h:
             self.top = self.cy - self.view_h + 1
-        if self.cx < self.left:
+
+        # Row-number gutter keeps the grid easy to scan and to talk about.
+        last_num = self.row_offset + max(1, len(self.rows))
+        num_w = max(2, len(str(last_num)))
+        gutter = num_w + 2
+        avail = max(1, w - gutter)
+
+        if self.left > self.cx:
             self.left = self.cx
-        while self.left < self.cx and self._span(self.left, self.cx) > w:
+        while self.left < self.cx and self._span(self.left, self.cx) > avail:
             self.left += 1
+
         sort_col, sort_desc = self.sort
-        col = x
+        put(scr, y, x, " " + pad_str("#", num_w, "right") + " ", A["dim"], gutter)
+        col = x + gutter
+        last_col = len(self.cols) - 1
         for i in range(self.left, len(self.cols)):
             if col >= x + w:
                 break
-            cw = self.widths[i]
+            cw = min(self.widths[i], x + w - col)
             raw_name = self.cols[i]
             t = self.col_types.get(raw_name, "").upper()
-            glyph = "#" if any(x in t for x in ("INT", "NUM")) else ("$" if any(x in t for x in ("REAL", "DOUB", "FLOA")) else ("B" if "BLOB" in t else "T"))
-            pk_mark = "🔑" if raw_name in self.pks else ""
-            fk_mark = "➔" if self.fk_for_col(raw_name) else ""
-            name = f"{pk_mark}{fk_mark}{raw_name} [{glyph}]" if glyph else f"{pk_mark}{fk_mark}{raw_name}"
+            if any(k in t for k in ("INT", "NUM")):
+                glyph = "#"
+            elif any(k in t for k in ("REAL", "DOUB", "FLOA")):
+                glyph = "$"
+            elif "BLOB" in t:
+                glyph = "B"
+            else:
+                glyph = "T"
+            badges = []
+            if raw_name in self.pks:
+                badges.append("PK")
+            if self.fk_for_col(raw_name):
+                badges.append("FK")
+            name = raw_name + ((" " + " ".join(badges)) if badges else "") + f" {glyph}"
             if raw_name == sort_col:
                 name += " ▼" if sort_desc else " ▲"
-            fitted_name = fit_str(name, cw)
-            padded_name = pad_str(fitted_name, cw)
-            put(scr, y, col, padded_name, A["hdr"], min(cw, x + w - col))
-            col += cw
-            put(scr, y, col, "│", A["dim"])
+            put(scr, y, col, pad_str(fit_str(name, cw), cw), A["hdr"], cw)
+            col += self.widths[i]
+            if i < last_col and col < x + w:
+                put(scr, y, col, "│", A["dim"], 1)
             col += 1
+
+        if not self.rows:
+            hint = ("  (empty table — press 'n' to insert a row)"
+                    if self.table_mode else "  (no rows returned)")
+            put(scr, y + 1, x, hint, A["dim"], w)
+            return
+
         for r in range(self.view_h):
             ri = self.top + r
             if ri >= len(self.rows):
                 break
             row = self.rows[ri]
             sel_row = ri == self.cy
-            col = x
+            row_attr = A["sel"] if focused else A["underline"]
+            if sel_row:
+                put(scr, y + 1 + r, x, " " * w, row_attr, w)
+            put(scr, y + 1 + r, x, " " + pad_str(f"{self.row_offset + ri + 1:,}", num_w, "right") + " ",
+                row_attr if sel_row else A["dim"], gutter)
+            col = x + gutter
             for i in range(self.left, len(self.cols)):
                 if col >= x + w:
                     break
-                cw = self.widths[i]
+                cw = min(self.widths[i], x + w - col)
                 v = row[i]
-                s = fmt_value(v)
-                if s.isascii():
-                    padded = s[:cw].ljust(cw)
-                else:
-                    padded = pad_str(fit_str(s, cw), cw)
+                padded = pad_str(fit_str(fmt_value(v), cw), cw)
                 is_match = bool(self.search_query and self.search_query in str(v).lower())
-                attr = A["null"] if v is None else 0
-                if is_match:
-                    attr = A["warn"]
                 if sel_row:
-                    if focused and i == self.cx:
-                        attr = A["cur"]
-                    elif focused:
-                        attr = A["sel"]
-                    else:
-                        attr = A["underline"]
-                put(scr, y + 1 + r, col, padded, attr, min(cw, x + w - col))
-                col += cw
-                put(scr, y + 1 + r, col, "│", A["dim"])
+                    attr = (A["tab_on"] | curses.A_BOLD) if (focused and i == self.cx) else row_attr
+                else:
+                    attr = A["null"] if v is None else 0
+                    if is_match:
+                        attr = A["warn"]
+                put(scr, y + 1 + r, col, padded, attr, cw)
+                col += self.widths[i]
+                if i < last_col and col < x + w:
+                    put(scr, y + 1 + r, col, "│", row_attr if sel_row else A["dim"], 1)
                 col += 1
 
 
@@ -1684,10 +1799,16 @@ class Sidebar:
             items = [n for n in names if f in n.lower()] if f else names
             if not items:
                 continue
-            out.append(("hdr", f"{title} ({len(items)})"))
+            if f:
+                out.append(("hdr", f"{title} ({len(items)}/{len(names)})"))
+            else:
+                out.append(("hdr", f"{title} ({len(items)})"))
             out.extend((kind, n) for n in items)
         self._cached_rows = out
         return out
+
+    def count(self) -> int:
+        return sum(1 for row in self.rows() if row[0] != "hdr")
 
     def move(self, delta: int, rows: list[tuple[str, str]]) -> None:
         if not rows:
@@ -1723,7 +1844,7 @@ class Sidebar:
         if self.cy >= self.top + h:
             self.top = self.cy - h + 1
         if not rows:
-            put(scr, y, x, "  (no objects)", A["dim"], w)
+            put(scr, y, x, "  (no objects — press 'r' to refresh)", A["dim"], w)
             return
         for r in range(h):
             i = self.top + r
@@ -1734,11 +1855,15 @@ class Sidebar:
                 put(scr, y + r, x, pad_str(f"▼ {name}", w), A["hdr"], w)
                 continue
             cnt = self.table_counts.get(name)
-            cnt_str = f" ({cnt:,})" if cnt is not None else ""
             glyph = "●" if kind == "table" else ("○" if kind == "view" else ("⚡" if kind == "index" else "⚙"))
-            text = f"  {glyph} {name}{cnt_str}"
+            left = f"  {glyph} {name}"
+            right = f"{cnt:,} " if cnt is not None else ""
             attr = (A["sel"] if focused else A["underline"]) if i == self.cy else 0
-            put(scr, y + r, x, pad_str(text, w), attr, w)
+            if right and str_width(left) + str_width(right) + 2 <= w:
+                put(scr, y + r, x, pad_str(left, w - str_width(right)), attr, w - str_width(right))
+                put(scr, y + r, x + w - str_width(right), right, attr, str_width(right))
+            else:
+                put(scr, y + r, x, pad_str(left, w), attr, w)
 
 
 # ---------------------------------------------------------------------------
@@ -1825,6 +1950,9 @@ class App:
         self.theme_key = self.cfg.get("theme", "tokyo-night")
         self.focus_panel_id = 1       # 1: Objects, 2: Columns, 3: Editor, 4: Results/Data
         self.zoomed = False           # Maximize active panel (lazygit style)
+        self.simple = bool(self.cfg.get("simple_mode", True))
+        self.last_sql_path = ""
+        self.tab_hits: list[tuple[int, int, int]] = []
 
         self.side = Sidebar()
         self.col_list = ColumnList()
@@ -1859,7 +1987,8 @@ class App:
             self.open_table("orders")
         elif self.table_names:
             self.open_table(self.table_names[0])
-        self.set_msg("Welcome to sqlite_tui · Press '?' for quick help or '1'..'4' to switch panels")
+        self.set_msg("Simple mode · Ctrl+O open DB/SQL · F2 layout" if self.simple
+                     else "4-panel mode · Ctrl+O open DB/SQL · F2 simple")
 
     def get_undo_file_path(self) -> str:
         if self.db.path != ":memory:":
@@ -2004,6 +2133,15 @@ class App:
 
     def handle_mouse(self, mx: int, my: int, bstate: int) -> None:
         H, W = self.scr.getmaxyx()
+        if my == 0:
+            for x0, x1, pid in self.tab_hits:
+                if x0 <= mx < x1:
+                    if pid == 0:
+                        self.show_text("Shortcuts & Panels Help", HELP_LINES)
+                    else:
+                        self.focus_panel(pid)
+                    return
+            return
         y0, h_avail = 1, H - 3
         sw = min(36, max(22, W // 4))
         h_left1 = h_avail * 55 // 100
@@ -2011,6 +2149,48 @@ class App:
 
         wheel_up = bstate & (curses.BUTTON4_PRESSED | getattr(curses, "BUTTON4_CLICKED", 0x20000))
         wheel_down = bstate & (getattr(curses, "BUTTON5_PRESSED", 0x200000) | getattr(curses, "BUTTON5_CLICKED", 0x400000))
+
+        if self.simple:
+            if my < 2 or my >= H - 2:
+                return
+            if wheel_up or wheel_down:
+                step = -1 if wheel_up else 1
+                if self.focus_panel_id == 1:
+                    self.side.move(step * 3, self.side.rows())
+                elif self.focus_panel_id == 2:
+                    self.col_list.handle_key(curses.KEY_DOWN if step > 0 else curses.KEY_UP)
+                elif self.focus_panel_id == 3:
+                    self.editor.handle_key(curses.KEY_DOWN if step > 0 else curses.KEY_UP)
+                else:
+                    self.grid.handle_key(curses.KEY_DOWN if step > 0 else curses.KEY_UP)
+                return
+            row_idx = my - 2
+            if self.focus_panel_id == 1:
+                rows = self.side.rows()
+                i = self.side.top + row_idx
+                if 0 <= i < len(rows):
+                    self.side.cy = i
+                    sel = self.side.selected()
+                    if sel and sel[0] in ("table", "view"):
+                        self.col_list.set_table(self.db, sel[1])
+                        if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                            self.open_table(sel[1])
+                            self.focus_panel(4)
+            elif self.focus_panel_id == 2:
+                i = self.col_list.top + row_idx
+                if 0 <= i < len(self.col_list.cols):
+                    self.col_list.cy = i
+                    if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                        self.show_column_stats()
+            elif self.focus_panel_id == 3:
+                self.editor.cy = max(0, min(len(self.editor.lines) - 1, self.editor.top + row_idx))
+            else:
+                i = self.grid.top + row_idx
+                if 0 <= i < len(self.grid.rows):
+                    self.grid.cy = i
+                    if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                        self.edit_cell()
+            return
 
         if wheel_up or wheel_down:
             step = -1 if wheel_up else 1
@@ -2062,21 +2242,31 @@ class App:
                     self.edit_cell()
 
     def dispatch(self, key: Any) -> bool:
-        if key in (curses.KEY_F1, "?"):
+        if key == curses.KEY_F1 or (key == "?" and self.focus_panel_id != 3):
             self.show_text("Shortcuts & Panels Help", HELP_LINES)
             return False
         if key == curses.KEY_F10:
             return self.menu()
+        if key == curses.KEY_F2:
+            self.toggle_simple()
+            return False
+        if key == CTRL_S:
+            self.save_sql_file()
+            return False
+        if key == "m" and self.focus_panel_id != 3:
+            return self.menu()
+        if key == CTRL_O:
+            self.open_db()
+            return False
         if key == CTRL_Q:
             return self.quit()
-        if key == ord("T") or key == "T":
+        if key == "T" and self.focus_panel_id != 3:
             self.theme_menu()
             return False
-        if key == "z":
-            self.zoomed = not self.zoomed
-            self.set_msg("Panel maximized [ZOOM]" if self.zoomed else "Multi-panel layout restored")
+        if key == "z" and self.focus_panel_id != 3:
+            self.toggle_zoom()
             return False
-        if key == ord("\t") or key == KEY_TAB:
+        if (key == ord("\t") or key == KEY_TAB) and self.focus_panel_id != 3:
             self.cycle_panel(1)
             return False
         if key == curses.KEY_BTAB:
@@ -2084,6 +2274,9 @@ class App:
             return False
         if key == curses.KEY_F6:
             self.cycle_panel(1)
+            return False
+        if key == "u" and self.focus_panel_id != 3:
+            self.apply_undo()
             return False
 
         if self.focus_panel_id != 3:
@@ -2122,6 +2315,76 @@ class App:
             self.db.conn.execute("ROLLBACK")
         return True
 
+    def toggle_zoom(self) -> None:
+        if self.simple:
+            self.set_msg("Simple mode already shows one panel · F2 for 4-panel layout")
+            return
+        self.zoomed = not self.zoomed
+        self.set_msg("Panel maximized [ZOOM]" if self.zoomed else "Multi-panel layout restored")
+
+    def toggle_simple(self) -> None:
+        self.simple = not self.simple
+        self.zoomed = False
+        self.cfg["simple_mode"] = self.simple
+        save_config(self.cfg)
+        if self.simple:
+            self.set_msg("Simple mode: one panel at a time · F2 for 4-panel layout")
+        else:
+            self.set_msg("4-panel layout restored · F2 for simple mode")
+
+    def _panel_title(self, pid: int) -> tuple[str, Optional[int], str]:
+        """Builds panel title, count and badge in one place for both layouts."""
+        if pid == 1:
+            badge = f"/{self.side.filter}" if self.side.filter else ""
+            return "[1] Objects", self.side.count(), badge
+        if pid == 2:
+            W = self.scr.getmaxyx()[1]
+            full = self.zoomed or self.simple
+            panel_w = W if full else min(36, max(24, W // 4))
+            title = "[2] Columns"
+            candidate = title + (f" · {self.table}" if self.table else "")
+            if self.table and str_width(candidate) + 2 <= panel_w - 6:
+                title = candidate
+            return title, None, ""
+        if pid == 3:
+            return "[3] SQL", None, f"Ln {self.editor.cy + 1}, Col {self.editor.cx + 1}"
+
+        g = self.grid
+        W = self.scr.getmaxyx()[1]
+        full = self.zoomed or self.simple
+        panel_w = W if full else W - min(36, max(24, W // 4))
+        compact = panel_w < 70
+        parts = []
+        if self.nav_stack:
+            parts.append(f"b:back {len(self.nav_stack)}")
+        if self.table:
+            title = f"[4] {self.table}"
+            if g.cols and 0 <= g.cx < len(g.cols):
+                cur_col = g.cols[g.cx]
+                col_type = g.col_types.get(cur_col, "")
+                title += f" · {cur_col}"
+                fk = g.fk_for_col(cur_col)
+                if not compact:
+                    title += f" ({col_type or 'ANY'})"
+                    if cur_col in g.pks:
+                        title += " PK"
+                    if fk:
+                        title += f" → {fk[2]}.{fk[4] or 'id'}"
+                elif fk:
+                    title += " →"
+            if self.pages() > 1:
+                parts.insert(0, f"pg {self.page + 1}/{self.pages()}")
+            if self.where:
+                parts.append("WHERE " + fit_str(self.where, 18))
+            if self.order:
+                parts.append(f"sort {self.order} {'▼' if self.desc else '▲'}")
+            return title, self.total, " · ".join(parts)
+
+        title = "[4] Results"
+        if self.result_title:
+            title += f" · {self.result_title}"
+        return title, len(g.rows), " · ".join(parts)
+
     # ----- drawing ---------------------------------------------------------
 
     def draw(self) -> None:
@@ -2135,30 +2398,23 @@ class App:
 
         self.draw_header(W)
         y0, h_avail = 1, H - 3
+        t1, c1, b1 = self._panel_title(1)
+        t2, c2, b2 = self._panel_title(2)
+        t3, c3, b3 = self._panel_title(3)
+        t4, c4, b4 = self._panel_title(4)
 
-        if self.zoomed:
+        if self.zoomed or self.simple:
             if self.focus_panel_id == 1:
-                draw_box(scr, y0, 0, h_avail, W, "[1] Schema & Objects", True, len(self.side.rows()))
+                draw_box(scr, y0, 0, h_avail, W, t1, True, c1, b1)
                 self.side.draw(scr, y0 + 1, 1, h_avail - 2, W - 2, True)
             elif self.focus_panel_id == 2:
-                draw_box(scr, y0, 0, h_avail, W, f"[2] Columns: {self.table or 'none'}", True, len(self.col_list.cols))
+                draw_box(scr, y0, 0, h_avail, W, t2, True, c2, b2)
                 self.col_list.draw(scr, y0 + 1, 1, h_avail - 2, W - 2, True)
             elif self.focus_panel_id == 3:
-                draw_box(scr, y0, 0, h_avail, W, "[3] SQL Editor", True)
+                draw_box(scr, y0, 0, h_avail, W, t3, True, c3, b3)
                 self.editor.draw(scr, y0 + 1, 1, h_avail - 2, W - 2, True)
             else:
-                if self.table and self.grid.cols and 0 <= self.grid.cx < len(self.grid.cols):
-                    cur_col = self.grid.cols[self.grid.cx]
-                    col_type = self.grid.col_types.get(cur_col, "")
-                    pk_tag = " 🔑PK" if cur_col in self.grid.pks else ""
-                    fk = self.grid.fk_for_col(cur_col)
-                    fk_tag = f" ➔ {fk[2]}.{fk[4] or 'id'} (f)" if fk else ""
-                    nav_tag = f" [b: Back ({len(self.nav_stack)})]" if self.nav_stack else ""
-                    tbl_info = f"{self.table} · {cur_col} ({col_type or 'ANY'}){pk_tag}{fk_tag}{nav_tag}"
-                else:
-                    nav_tag = f" [b: Back ({len(self.nav_stack)})]" if self.nav_stack else ""
-                    tbl_info = (f"Table: {self.table}" if self.table else "Query Results") + nav_tag
-                draw_box(scr, y0, 0, h_avail, W, f"[4] {tbl_info}", True, len(self.grid.rows))
+                draw_box(scr, y0, 0, h_avail, W, t4, True, c4, b4)
                 self.grid.draw(scr, y0 + 1, 1, h_avail - 2, W - 2, True)
         else:
             sw = min(36, max(24, W // 4))
@@ -2168,27 +2424,16 @@ class App:
             h_right1 = max(5, h_avail * 38 // 100)
             h_right2 = h_avail - h_right1
 
-            draw_box(scr, y0, 0, h_left1, sw, "[1] Objects", self.focus_panel_id == 1, len(self.side.rows()))
+            draw_box(scr, y0, 0, h_left1, sw, t1, self.focus_panel_id == 1, c1, b1)
             self.side.draw(scr, y0 + 1, 1, h_left1 - 2, sw - 2, self.focus_panel_id == 1)
 
-            draw_box(scr, y0 + h_left1, 0, h_left2, sw, "[2] Columns", self.focus_panel_id == 2, len(self.col_list.cols))
+            draw_box(scr, y0 + h_left1, 0, h_left2, sw, t2, self.focus_panel_id == 2, c2, b2)
             self.col_list.draw(scr, y0 + h_left1 + 1, 1, h_left2 - 2, sw - 2, self.focus_panel_id == 2)
 
-            draw_box(scr, y0, sw, h_right1, rw, "[3] SQL Editor", self.focus_panel_id == 3)
+            draw_box(scr, y0, sw, h_right1, rw, t3, self.focus_panel_id == 3, c3, b3)
             self.editor.draw(scr, y0 + 1, sw + 1, h_right1 - 2, rw - 2, self.focus_panel_id == 3)
 
-            if self.table and self.grid.cols and 0 <= self.grid.cx < len(self.grid.cols):
-                cur_col = self.grid.cols[self.grid.cx]
-                col_type = self.grid.col_types.get(cur_col, "")
-                pk_tag = " 🔑PK" if cur_col in self.grid.pks else ""
-                fk = self.grid.fk_for_col(cur_col)
-                fk_tag = f" ➔ {fk[2]}.{fk[4] or 'id'} (f)" if fk else ""
-                nav_tag = f" [b: Back ({len(self.nav_stack)})]" if self.nav_stack else ""
-                tbl_title = f"[4] {self.table} · {cur_col} ({col_type or 'ANY'}){pk_tag}{fk_tag}{nav_tag}"
-            else:
-                nav_tag = f" [b: Back ({len(self.nav_stack)})]" if self.nav_stack else ""
-                tbl_title = (f"[4] Data: {self.table}" if self.table else f"[4] Results · {self.result_title or 'no data'}") + nav_tag
-            draw_box(scr, y0 + h_right1, sw, h_right2, rw, tbl_title, self.focus_panel_id == 4, len(self.grid.rows))
+            draw_box(scr, y0 + h_right1, sw, h_right2, rw, t4, self.focus_panel_id == 4, c4, b4)
             self.grid.draw(scr, y0 + h_right1 + 1, sw + 1, h_right2 - 2, rw - 2, self.focus_panel_id == 4)
 
         self.draw_context_bar(H - 2, W)
@@ -2203,59 +2448,146 @@ class App:
             pass
         scr.noutrefresh()
 
+    PANEL_TABS = ((1, "Objects", "Obj"), (2, "Columns", "Cols"), (3, "SQL", "SQL"), (4, "Data", "Data"))
+
     def draw_header(self, W: int) -> None:
+        scr = self.scr
+        put(scr, 0, 0, " " * W, A["bar"], W)
+        compact = W < 78
+        brand = " sqlite_tui " if W >= 58 else " sqltui "
+        put(scr, 0, 0, brand, A["bar"] | curses.A_BOLD, str_width(brand))
+        x = str_width(brand)
+
         flags = []
         if self.zoomed:
-            flags.append("[ZOOM]")
+            flags.append("ZOOM")
         if self.db.readonly:
-            flags.append("[RO]")
+            flags.append("RO")
         if self.db.conn.in_transaction:
-            flags.append("[TX]")
-        theme_name = THEMES.get(self.theme_key, {}).get("name", self.theme_key)
-        left = f" sqlite_tui │ {self.db.path} │ {theme_name}"
-        put(self.scr, 0, 0, pad_str(left, W), A["bar"], W)
-        if flags:
-            right = " ".join(flags) + " "
-            put(self.scr, 0, max(0, W - len(right)), right, A["bar"] | curses.A_BOLD, len(right))
+            flags.append("TX")
+        right = ("".join(f" [{f}]" for f in flags) if flags else "") + " ? Help "
+        if x + str_width(right) + 20 > W:
+            right = " ? "
+        right_w = str_width(right)
+        limit = max(x, W - right_w - 1)
+
+        self.tab_hits = []
+        for pid, full, short in self.PANEL_TABS:
+            label = short if compact else full
+            text = f" {pid} {label} "
+            tw = str_width(text)
+            if x + tw > limit:
+                break
+            attr = A["tab_on"] if pid == self.focus_panel_id else A["bar"] | curses.A_UNDERLINE
+            put(scr, 0, x, text, attr, tw)
+            self.tab_hits.append((x, x + tw, pid))
+            x += tw
+
+        name = "scratchpad" if self.db.path == ":memory:" else os.path.basename(self.db.path)
+        if W >= 110 and x + 4 < limit:
+            put(scr, 0, x, "│ " + fit_str(name, max(8, limit - x - 3)), A["bar"], max(0, limit - x))
+
+        rx = W - right_w
+        put(scr, 0, rx, right, A["bar"] | curses.A_BOLD, right_w)
+        hp = right.find("?")
+        if hp >= 0:
+            self.tab_hits.append((rx + hp, W, 0))
 
     def draw_context_bar(self, y: int, W: int) -> None:
         if self.focus_panel_id == 1:
-            actions = [("1-4", "Panels"), ("Enter", "Open"), ("q", "SELECT"), ("s", "Schema"),
-                       ("d", "DROP"), ("/", "Filter"), ("z", "Zoom"), ("T", "Theme"), ("F10", "Menu")]
+            actions = [("1-4", "Panels"), ("Ctrl+O", "Open"), ("Enter", "Open"), ("q", "SELECT"),
+                       ("s", "Schema"), ("m", "Menu"), ("/", "Filter"), ("d", "DROP")]
         elif self.focus_panel_id == 2:
             actions = [("1-4", "Panels"), ("i/Enter", "Stats"), ("f", "FK Table"),
                        ("b", f"Back ({len(self.nav_stack)})") if self.nav_stack else ("", ""),
-                       ("q", "SELECT col"), ("z", "Zoom"), ("T", "Theme"), ("F10", "Menu")]
+                       ("q", "SELECT col"), ("m", "Menu")]
             actions = [(k, d) for k, d in actions if k]
         elif self.focus_panel_id == 3:
             actions = [("1-4", "Panels"), ("F5", "Run All"), ("F9", "Run Line"), ("F8", "Complete"),
-                       ("Ctrl+P", "Format"), ("Ctrl+Z", "Undo"), ("Ctrl+R", "Redo"), ("z", "Zoom"), ("F10", "Menu")]
+                       ("Ctrl+S", "Save"), ("Ctrl+P", "Format"), ("Ctrl+Z", "Undo"), ("Ctrl+R", "Redo"), ("m", "Menu")]
         else:
             actions = [("1-4", "Panels"), ("e", "Edit"), ("Space", "Inspect"),
                        ("f", "FK Jump"), ("F", "Ref By"),
                        ("b", f"Back ({len(self.nav_stack)})") if self.nav_stack else ("", ""),
-                       ("n", "New"), ("d", "Delete"), ("u", "Undo SQL"),
-                       ("i", "Stats"), ("o", "Sort"), ("/", "Filter"), ("x", "Export")]
+                       ("n", "New"), ("d", "Delete"), ("o", "Sort"), ("/", "Filter"),
+                       ("i", "Stats"), ("x", "Export"), ("u", "Undo")]
             actions = [(k, d) for k, d in actions if k]
 
+        if self.simple:
+            if self.focus_panel_id == 1:
+                actions = [("Enter", "Open"), ("q", "SELECT"), ("/", "Filter"),
+                           ("Ctrl+O", "Open DB/SQL"), ("F2", "Layout")]
+            elif self.focus_panel_id == 2:
+                actions = [("i", "Stats"), ("f", "FK Table"), ("q", "SELECT"),
+                           ("Ctrl+O", "Open DB/SQL"), ("F2", "Layout")]
+            elif self.focus_panel_id == 3:
+                actions = [("F5", "Run"), ("F9", "Statement"), ("F8", "Complete"),
+                           ("Ctrl+O", "Open"), ("Ctrl+S", "Save"), ("F2", "Layout")]
+            else:
+                actions = [("e", "Edit"), ("Space", "Inspect"), ("/", "Filter"),
+                           ("o", "Sort"), ("x", "Export"), ("F2", "Layout")]
+
         cur_x = 0
+        help_text = " ? Help "
+        help_w = str_width(help_text)
+        limit = max(0, W - help_w - 1)
         for key, desc in actions:
-            if cur_x >= W - 4:
-                break
             key_badge = f" {key} "
             desc_badge = f" {desc} "
-            put(self.scr, y, cur_x, key_badge, A["bar"] | curses.A_BOLD)
-            cur_x += len(key_badge)
-            put(self.scr, y, cur_x, desc_badge, A["dim"])
-            cur_x += len(desc_badge)
+            seg_w = str_width(key_badge) + str_width(desc_badge)
+            if cur_x + seg_w > limit:
+                break
+            put(self.scr, y, cur_x, key_badge, A["tab_on"] | curses.A_UNDERLINE, str_width(key_badge))
+            cur_x += str_width(key_badge)
+            put(self.scr, y, cur_x, desc_badge, A["bar"], str_width(desc_badge))
+            cur_x += str_width(desc_badge)
+            if cur_x < limit:
+                put(self.scr, y, cur_x, " ", A["bar"], 1)
+                cur_x += 1
+        put(self.scr, y, W - help_w, help_text, A["bar"] | curses.A_BOLD, help_w)
+
+    def status_info(self) -> str:
+        parts = []
+        if self.focus_panel_id == 3:
+            parts.append(f"Ln {self.editor.cy + 1}, Col {self.editor.cx + 1}")
+        elif self.focus_panel_id == 4:
+            if self.table:
+                parts.append(f"{self.total:,} rows")
+                if self.pages() > 1:
+                    parts.append(f"pg {self.page + 1}/{self.pages()}")
+                if self.where:
+                    parts.append("filtered")
+                if self.order:
+                    parts.append("sorted")
+            else:
+                parts.append(f"{len(self.grid.rows):,} rows")
+        elif self.focus_panel_id == 2:
+            if self.col_list.table:
+                parts.append(f"{self.col_list.table} · {len(self.col_list.cols)} cols")
+        else:
+            n = self.side.count()
+            parts.append(f"{n} object{'s' if n != 1 else ''}")
+        if self.side.filter and self.focus_panel_id == 1:
+            parts.append(f"/{self.side.filter}")
+        if self.undo_stack:
+            parts.append(f"undo {len(self.undo_stack)}")
+        if self.db.readonly:
+            parts.append("read-only")
+        parts.append("scratchpad" if self.db.path == ":memory:" else os.path.basename(self.db.path))
+        return " · ".join(parts)
 
     def draw_status(self, y: int, W: int) -> None:
+        info = fit_str(self.status_info(), max(0, W // 2))
+        info_w = str_width(info)
+        msg_w = max(0, W - info_w - 2)
         if self.msg:
-            put(self.scr, y, 0, " ● " + self.msg, A["err"] if self.msg_err else A["ok"], W)
+            prefix = " ✖ " if self.msg_err else " ● "
+            put(self.scr, y, 0, prefix + self.msg, A["err"] if self.msg_err else A["ok"], msg_w)
         else:
-            fname = os.path.basename(self.undo_file_path)
-            undo_info = f" · Undo log: {fname}" if self.undo_stack else ""
-            put(self.scr, y, 0, f" ● ready{undo_info}", A["dim"], W)
+            undo_info = f" · undo available ({len(self.undo_stack)})" if self.undo_stack else ""
+            put(self.scr, y, 0, f" ● ready{undo_info}", A["dim"], msg_w)
+        if info_w:
+            put(self.scr, y, W - info_w, info, A["dim"], info_w)
 
     # ----- schema and column inspector ------------------------------------
 
@@ -2540,6 +2872,7 @@ class App:
         if last_query:
             self.table = None
             self.grid.set_data(last_query.cols, last_query.rows)
+            self.grid.row_offset = 0
             self.grid.sort = (None, False)
             limited = " (limited)" if last_query.truncated else ""
             self.result_title = f"{len(last_query.rows)} rows{limited} · {ms:.1f} ms"
@@ -2780,7 +3113,8 @@ class App:
         col_types = {c.name: c.type for c in self.table_cols}
         pks = {c.name for c in self.table_cols if c.pk}
         fks = self.db.foreign_keys(self.table)
-        self.grid.set_data(cols[off:], [r[off:] for r in raw], keep, col_types, pks, fks)
+        self.grid.set_data(cols[off:], [r[off:] for r in raw], keep, col_types, pks, fks, table_mode=True)
+        self.grid.row_offset = self.page * ps
         self.grid.sort = (self.order, self.desc)
         self.keyvals = [tuple(r[i] for _, i in self.key.keys) for r in raw]
         return True
@@ -2826,6 +3160,26 @@ class App:
                 if q is not None:
                     count = self.grid.search(q)
                     self.set_msg(f"{count} match(es)" if count else "No matches")
+            return
+        if key in ("]", "["):
+            if self.grid.next_match(1 if key == "]" else -1):
+                idx = self.grid.search_idx + 1
+                total = len(self.grid.search_matches)
+                self.set_msg(f"Match {idx}/{total}")
+            else:
+                self.set_msg("No active search", True)
+            return
+        if key == KEY_ESC:
+            if self.grid.search_query:
+                self.grid.search_query = ""
+                self.grid.search_matches = []
+                self.grid.search_idx = -1
+                self.set_msg("Search cleared")
+            elif self.where:
+                self.where = ""
+                self.page = 0
+                self.load_data(recount=True)
+                self.set_msg("Filter cleared")
             return
         if key == "c" and self.table:
             self.where, self.order, self.desc, self.page = "", None, False, 0
@@ -3197,19 +3551,25 @@ class App:
         while True:
             self.draw()
             H, W = self.scr.getmaxyx()
-            avail = max(1, W - len(label) - 1)
+            shown = label
+            if str_width(shown) + 24 > W:
+                shown = fit_str(label, max(8, W - 24))
+            label_w = str_width(shown)
+            avail = max(1, W - label_w)
             start = max(0, pos - avail + 1)
-            visible = "".join(buf)[start:start + avail]
-            put(self.scr, H - 1, 0, label, A["prompt"], len(label))
-            put(self.scr, H - 1, len(label), visible.ljust(avail), 0, avail)
+            visible = "".join(buf[start:start + avail])
+            put(self.scr, H - 1, 0, " " * W, 0, W)
+            put(self.scr, H - 1, 0, shown, A["prompt"], label_w)
+            put(self.scr, H - 1, label_w, visible, 0, avail)
             try:
-                self.scr.move(H - 1, min(W - 1, len(label) + pos - start))
+                cursor_x = label_w + str_width("".join(buf[start:pos]))
+                self.scr.move(H - 1, min(W - 1, cursor_x))
                 curses.curs_set(1)
             except curses.error:
                 pass
             curses.doupdate()
             key = read_key(self.scr)
-            if key is None:
+            if key is None or key == curses.KEY_RESIZE:
                 continue
             if key in KEY_ENTER:
                 return "".join(buf)
@@ -3247,13 +3607,67 @@ class App:
                 pos += 1
 
     def confirm(self, msg: str) -> bool:
-        self.draw()
-        H, W = self.scr.getmaxyx()
-        text = f" {msg} [y/N] "
-        put(self.scr, H - 1, 0, text.ljust(W - 1), A["warn"], W - 1)
-        curses.doupdate()
-        key = read_key(self.scr)
-        return key in ("y", "Y", "s", "S")
+        while True:
+            self.draw()
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            H, W = self.scr.getmaxyx()
+            w = min(W - 4, max(38, min(str_width(msg) + 8, 76)))
+            inner = max(10, w - 6)
+            lines = wrap_text(msg, inner)
+            h = min(H - 2, len(lines) + 5)
+            max_lines = max(1, h - 4)
+            if len(lines) > max_lines:
+                lines = lines[:max_lines]
+                lines[-1] = fit_str(lines[-1] + " …", inner)
+            win = self.popup("Confirm", h, w)
+            for i, line in enumerate(lines):
+                put(win, 2 + i, 3, line, A["warn"], inner)
+            put(win, h - 2, 3, "[ y ] Yes", A["sel"], 10)
+            put(win, h - 2, 15, "[ n ] Cancel", A["dim"], 13)
+            win.noutrefresh()
+            curses.doupdate()
+            key = read_key(self.scr)
+            if key is None or key == curses.KEY_RESIZE:
+                continue
+            if key == curses.KEY_MOUSE:
+                event = self._read_mouse()
+                if event is None:
+                    continue
+                mx, my, bstate = event
+                if bstate & MOUSE_B1:
+                    hit = self._window_hit(win, mx, my)
+                    if hit is None:
+                        return False
+                    wx, wy = hit
+                    button_y = win.getmaxyx()[0] - 2
+                    if wy == button_y and 3 <= wx < 13:
+                        return True
+                    if wy == button_y and 15 <= wx < 28:
+                        return False
+                continue
+            return key in ("y", "Y", "s", "S")
+
+    def _read_mouse(self) -> Optional[tuple[int, int, int]]:
+        try:
+            _id, mx, my, _z, bstate = curses.getmouse()
+            return mx, my, bstate
+        except curses.error:
+            return None
+
+    @staticmethod
+    def _window_hit(win, mx: int, my: int) -> Optional[tuple[int, int]]:
+        """Returns window-relative (x, y) when the click is inside the popup."""
+        try:
+            py, px = win.getbegyx()
+            wh, ww = win.getmaxyx()
+        except curses.error:
+            return None
+        if px <= mx < px + ww and py <= my < py + wh:
+            return mx - px, my - py
+        return None
 
     def popup(self, title: str, h: int, w: int):
         H, W = self.scr.getmaxyx()
@@ -3267,54 +3681,147 @@ class App:
     def choose(self, title: str, items: list[str]) -> Optional[int]:
         if not items:
             return None
+        needle = ""
         idx = top = 0
+        filtered = list(enumerate(items))
         while True:
             self.draw()
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
             H, W = self.scr.getmaxyx()
-            h = min(len(items) + 2, H - 2)
-            w = min(max(max(str_width(i) for i in items), str_width(title)) + 6, W - 2)
-            inner = max(1, h - 2)
+            h = min(max(9, len(items) + 5), max(9, H - 2))
+            longest = max(max((str_width(lbl) for lbl in items), default=10), str_width(title))
+            w = min(max(longest + 8, 44), W - 2)
+            inner = max(1, h - 4)
+            if filtered:
+                idx = max(0, min(idx, len(filtered) - 1))
+            else:
+                idx = 0
             if idx < top:
                 top = idx
             if idx >= top + inner:
                 top = idx - inner + 1
-            win = self.popup(title, h, w)
+            win = self.popup(title if not needle else f"{title} · /{needle}", h, w)
+            put(win, 1, 2, "/ " + needle, A["hdr"], w - 4)
+            if not filtered:
+                put(win, 2, 2, "  (no matches — Backspace to edit filter)", A["dim"], w - 4)
             for row in range(inner):
                 i = top + row
-                if i >= len(items):
+                if i >= len(filtered):
                     break
-                put(win, 1 + row, 2, items[i], A["sel"] if i == idx else 0, w - 4)
+                _orig, label = filtered[i]
+                text = pad_str(fit_str(label, w - 4), w - 4)
+                put(win, 2 + row, 2, text, A["sel"] if i == idx else 0, w - 4)
+            pos = f" {idx + 1}/{len(filtered)} " if filtered else " 0/0 "
+            fw = max(0, w - 4 - str_width(pos))
+            footer = " ↑↓ move · Enter open · Esc cancel · type to filter "
+            if str_width(footer) > fw:
+                footer = " ↑↓ · Enter · Esc · filter "
+            if str_width(footer) > fw:
+                footer = " ↑↓ Enter Esc "
+            put(win, h - 2, 2, fit_str(footer, fw), A["dim"], fw)
+            put(win, h - 2, w - 2 - str_width(pos), pos, A["dim"], str_width(pos))
             win.noutrefresh()
             curses.doupdate()
             key = read_key(self.scr)
-            if key in (curses.KEY_UP, "k"):
+            if key is None or key == curses.KEY_RESIZE:
+                continue
+            if key == curses.KEY_MOUSE:
+                event = self._read_mouse()
+                if event is None:
+                    continue
+                mx, my, bstate = event
+                if bstate & MOUSE_WHEEL_UP:
+                    idx = max(0, idx - 1)
+                elif bstate & MOUSE_WHEEL_DOWN:
+                    idx = min(len(filtered) - 1, idx + 1) if filtered else 0
+                elif bstate & MOUSE_B1:
+                    hit = self._window_hit(win, mx, my)
+                    if hit is None:
+                        return None
+                    _wx, wy = hit
+                    row = wy - 2
+                    if 0 <= row < inner and top + row < len(filtered):
+                        idx = top + row
+                        return filtered[idx][0]
+                continue
+            if key == curses.KEY_UP:
                 idx = max(0, idx - 1)
-            elif key in (curses.KEY_DOWN, "j"):
-                idx = min(len(items) - 1, idx + 1)
+            elif key == curses.KEY_DOWN:
+                idx = min(len(filtered) - 1, idx + 1) if filtered else 0
             elif key == curses.KEY_PPAGE:
                 idx = max(0, idx - inner)
             elif key == curses.KEY_NPAGE:
-                idx = min(len(items) - 1, idx + inner)
+                idx = min(len(filtered) - 1, idx + inner) if filtered else 0
+            elif key in KEY_BACK:
+                if needle:
+                    needle = needle[:-1]
+                    filtered = [(i, s) for i, s in enumerate(items) if needle.lower() in s.lower()]
+                    idx = top = 0
             elif key in KEY_ENTER:
-                return idx
-            elif key in (KEY_ESC, "q", CTRL_C):
+                if filtered:
+                    return filtered[idx][0]
+            elif key == CTRL_C:
                 return None
+            elif key == KEY_ESC:
+                if needle:
+                    needle = ""
+                    filtered = list(enumerate(items))
+                    idx = top = 0
+                else:
+                    return None
+            elif isinstance(key, str) and key.isprintable():
+                needle += key
+                filtered = [(i, s) for i, s in enumerate(items) if needle.lower() in s.lower()]
+                idx = top = 0
 
     def show_text(self, title: str, lines: list[str]) -> None:
         view = TextView()
         view.set(lines)
         while True:
             self.draw()
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
             H, W = self.scr.getmaxyx()
             h, w = max(6, H - 4), max(30, W - 6)
             win = self.popup(title, h, w)
             view.draw(win, 1, 2, h - 3, w - 4)
-            put(win, h - 2, 2, " j/k scroll · g/G top/bottom · Esc/q close", A["dim"], w - 4)
+            if lines:
+                pos = (f" {min(view.top + 1, len(lines))}-"
+                       f"{min(view.top + h - 3, len(lines))}/{len(lines)} ")
+            else:
+                pos = " 0/0 "
+            hint = " ↑↓/jk scroll · g/G top/bottom · Esc/q close "
+            fw = max(0, w - 4 - str_width(pos))
+            put(win, h - 2, 2, fit_str(hint, fw), A["dim"], fw)
+            put(win, h - 2, w - 2 - str_width(pos), pos, A["dim"], str_width(pos))
             win.noutrefresh()
             curses.doupdate()
             key = read_key(self.scr)
+            if key is None:
+                continue
+            if key == curses.KEY_MOUSE:
+                event = self._read_mouse()
+                if event is None:
+                    continue
+                mx, my, bstate = event
+                if self._window_hit(win, mx, my) is None:
+                    return
+                if bstate & MOUSE_WHEEL_UP:
+                    for _ in range(3):
+                        view.handle_key(curses.KEY_UP)
+                elif bstate & MOUSE_WHEEL_DOWN:
+                    for _ in range(3):
+                        view.handle_key(curses.KEY_DOWN)
+                continue
             if key in (KEY_ESC, "q", "Q", CTRL_C) or key in KEY_ENTER or key == curses.KEY_F1:
                 return
+            if key == curses.KEY_RESIZE:
+                continue
             view.handle_key(key)
 
     def menu(self) -> bool:
@@ -3322,6 +3829,8 @@ class App:
         items = [
             ("Execute all (F5)", lambda: self.run_sql(False)),
             ("Execute current statement (F9)", lambda: self.run_sql(True)),
+            ("Browse & open database or SQL script… (Ctrl+O)", self.open_db),
+            ("Save SQL script… (Ctrl+S)", self.save_sql_file),
             ("Format SQL query in editor (Ctrl+P)", self.format_editor_sql),
             ("Follow foreign key from current cell (f)", self.follow_fk),
             ("Find referencing records (incoming FK) (F)", self.find_incoming_fks),
@@ -3329,7 +3838,7 @@ class App:
             ("Undo last change (Undo SQL)…", self.apply_undo),
             ("View restore SQL file (Undo Log)…", self.view_undo_log),
             ("Switch visual theme (T)…", self.theme_menu),
-            ("Open another database…", self.open_db),
+            ("Toggle zoom on active panel (z)", self.toggle_zoom),
             ("Load interactive demo database…", self.load_demo_db),
             ("Query history…", self.history_menu),
             ("Template: create table", self.template_create),
@@ -3373,12 +3882,208 @@ class App:
                                 "    name TEXT NOT NULL,\n"
                                 "    created_at TEXT DEFAULT CURRENT_TIMESTAMP\n);\n")
 
+    def _resolve_db_path(self, value: str, base: str) -> str:
+        """Resolves ~, absolute and relative paths against the browsed directory."""
+        raw = value.strip()
+        if raw == ":memory:":
+            return raw
+        path = os.path.expanduser(raw)
+        if not os.path.isabs(path):
+            path = os.path.join(base, path)
+        return os.path.abspath(path)
+
+    def _list_open_dir(self, path: str, all_files: bool) -> tuple[list[tuple[str, bool, str, int]], str]:
+        """Lists parent, directories and SQLite candidates for the file browser."""
+        dirs: list[tuple[str, bool, str, int]] = []
+        files: list[tuple[str, bool, str, int]] = []
+        try:
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    if not all_files and entry.name.startswith("."):
+                        continue
+                    try:
+                        if entry.is_dir():
+                            dirs.append((entry.name, True, entry.path, 0))
+                        elif entry.is_file() and (all_files or entry.name.lower().endswith(OPEN_EXTENSIONS)):
+                            files.append((entry.name, False, entry.path, entry.stat().st_size))
+                    except OSError:
+                        continue
+        except OSError as exc:
+            return [], str(exc)
+        dirs.sort(key=lambda item: item[0].lower())
+        files.sort(key=lambda item: item[0].lower())
+        items: list[tuple[str, bool, str, int]] = []
+        parent = os.path.dirname(os.path.normpath(path))
+        if parent and os.path.normpath(parent) != os.path.normpath(path):
+            items.append(("..", True, parent, 0))
+        items.extend(dirs)
+        items.extend(files)
+        return items, ""
+
+    def pick_open_path(self) -> Optional[str]:
+        """Interactive browser for .db/.sqlite files (mouse and keyboard friendly)."""
+        start = self.cfg.get("last_db_dir", "")
+        if not start or not os.path.isdir(start):
+            if self.db.path not in (":memory:", "") and os.path.exists(self.db.path):
+                start = os.path.dirname(os.path.abspath(self.db.path))
+            else:
+                start = os.getcwd()
+        current = start
+        all_files = False
+        idx = top = 0
+        while True:
+            entries, error = self._list_open_dir(current, all_files)
+            self.draw()
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            H, W = self.scr.getmaxyx()
+            h = min(max(12, len(entries) + 5), H - 2)
+            w = min(max(52, W * 2 // 3), W - 4)
+            inner = max(1, h - 4)
+            if entries:
+                idx = max(0, min(idx, len(entries) - 1))
+            else:
+                idx = top = 0
+            if idx < top:
+                top = idx
+            if idx >= top + inner:
+                top = idx - inner + 1
+            title = "Open Database or SQL Script" + (" · all files" if all_files else "")
+            win = self.popup(title, h, w)
+            put(win, 1, 2, fit_str(short_path(current), w - 4), A["hdr"], w - 4)
+            if not entries:
+                message = error or "  (empty directory)"
+                put(win, 2, 2, fit_str(message, w - 4), A["err"] if error else A["dim"], w - 4)
+            for row in range(inner):
+                i = top + row
+                if i >= len(entries):
+                    break
+                name, is_dir, _full, size = entries[i]
+                label = f"  {name}/" if is_dir else f"  {name}"
+                size_text = "" if is_dir else human_size(size) + " "
+                text_w = max(1, w - 4 - str_width(size_text))
+                line = pad_str(fit_str(label, text_w), text_w) + size_text
+                attr = A["sel"] if i == idx else (A["hdr"] if is_dir else 0)
+                put(win, 2 + row, 2, line, attr, w - 4)
+
+            pos = f" {idx + 1}/{len(entries)} " if entries else " 0/0 "
+            hint = " ↑↓ move · Enter open · ⌫ up · a all · p path · n new · Esc "
+            if str_width(hint) + str_width(pos) > w - 4:
+                hint = " ↑↓ Enter · ⌫ up · a all · p path · Esc "
+            if str_width(hint) + str_width(pos) > w - 4:
+                hint = " ↑↓ Enter Esc "
+            fw = max(0, w - 4 - str_width(pos))
+            put(win, h - 2, 2, fit_str(hint, fw), A["dim"], fw)
+            put(win, h - 2, w - 2 - str_width(pos), pos, A["dim"], str_width(pos))
+            win.noutrefresh()
+            curses.doupdate()
+            key = read_key(self.scr)
+            if key is None or key == curses.KEY_RESIZE:
+                continue
+
+            if key == curses.KEY_MOUSE:
+                event = self._read_mouse()
+                if event is None:
+                    continue
+                mx, my, bstate = event
+                if bstate & MOUSE_WHEEL_UP:
+                    idx = max(0, idx - 3)
+                elif bstate & MOUSE_WHEEL_DOWN:
+                    idx = min(len(entries) - 1, idx + 3) if entries else 0
+                elif bstate & MOUSE_DBL:
+                    hit = self._window_hit(win, mx, my)
+                    if hit is None:
+                        return None
+                    _wx, wy = hit
+                    row = wy - 2
+                    if 0 <= row < inner and top + row < len(entries):
+                        idx = top + row
+                        _name, is_dir, full, _size = entries[idx]
+                        if is_dir:
+                            current, idx, top = full, 0, 0
+                        else:
+                            return full
+                elif bstate & MOUSE_B1:
+                    hit = self._window_hit(win, mx, my)
+                    if hit is None:
+                        return None
+                    _wx, wy = hit
+                    row = wy - 2
+                    if 0 <= row < inner and top + row < len(entries):
+                        idx = top + row
+                continue
+
+            if key in (KEY_ESC, "q", "Q", CTRL_C):
+                return None
+            if key in (curses.KEY_UP, "k"):
+                idx = max(0, idx - 1)
+            elif key in (curses.KEY_DOWN, "j"):
+                idx = min(len(entries) - 1, idx + 1) if entries else 0
+            elif key == curses.KEY_PPAGE:
+                idx = max(0, idx - inner)
+            elif key == curses.KEY_NPAGE:
+                idx = min(len(entries) - 1, idx + inner) if entries else 0
+            elif key in (curses.KEY_HOME, "g"):
+                idx = 0
+            elif key in (curses.KEY_END, "G"):
+                idx = max(0, len(entries) - 1)
+            elif key in KEY_ENTER or key == curses.KEY_RIGHT:
+                if entries:
+                    _name, is_dir, full, _size = entries[idx]
+                    if is_dir:
+                        current, idx, top = full, 0, 0
+                    else:
+                        return full
+            elif key in KEY_BACK or key == curses.KEY_LEFT:
+                parent = os.path.dirname(os.path.normpath(current))
+                if parent and os.path.normpath(parent) != os.path.normpath(current):
+                    current, idx, top = parent, 0, 0
+            elif key in ("a", "A"):
+                all_files = not all_files
+                idx = top = 0
+            elif key in ("p", "P"):
+                del win
+                typed = self.prompt("Path or database: ", current.rstrip(os.sep) + os.sep)
+                if not typed:
+                    continue
+                target = self._resolve_db_path(typed, current)
+                if os.path.isdir(target):
+                    current, idx, top = target, 0, 0
+                else:
+                    return target
+            elif key in ("n", "N"):
+                del win
+                typed = self.prompt("New database file: ", current.rstrip(os.sep) + os.sep)
+                if typed:
+                    return self._resolve_db_path(typed, current)
+
     def open_db(self) -> None:
-        path = self.prompt("Database path (created if not exists): ", "")
+        path = self.pick_open_path()
         if not path:
             return
+        path = os.path.expanduser(path.strip())
+        if path.lower().endswith(SQL_EXTENSIONS):
+            self.load_sql_file(os.path.abspath(path))
+            return
+        self._open_db_path(path)
+
+    def _open_db_path(self, path: str) -> None:
+        path = os.path.expanduser(path.strip())
+        if path != ":memory:":
+            path = os.path.abspath(path)
+            if os.path.isdir(path):
+                self.set_msg(f"Not a database file: {short_path(path)}", True)
+                return
+            if not os.path.exists(path):
+                if self.db.readonly:
+                    self.set_msg("Cannot create a database in read-only mode", True)
+                    return
+                if not self.confirm(f"Database «{short_path(path)}» does not exist. Create it?"):
+                    return
         try:
-            new = Db(os.path.expanduser(path.strip()), readonly=self.db.readonly)
+            new = Db(path, readonly=self.db.readonly)
         except sqlite3.Error as e:
             self.set_msg(f"Could not open database: {e}", True)
             return
@@ -3390,13 +4095,74 @@ class App:
         self.db.close()
         self.db = new
         self.table = None
-        self.grid.set_data([], [])
+        self.table_cols = []
+        self.key = KeyInfo(False, [])
+        self.keyvals = []
+        self.where = ""
+        self.order = None
+        self.desc = False
+        self.page = 0
+        self.total = 0
+        self.result_title = ""
+        self._cached_total_table = None
+        self._cached_total_where = None
+        self.side.filter = ""
+        self.side.cy = self.side.top = 0
+        self.side.invalidate()
+        self.col_list.table = ""
         self.col_list.cols = []
+        self.col_list.fks = []
+        self.col_list.cy = self.col_list.top = 0
+        self.grid.set_data([], [])
+        self.grid.sort = (None, False)
+        self.grid.search_query = ""
+        self.grid.search_matches = []
+        self.grid.search_idx = -1
         self.undo_stack.clear()
         self.undo_file_path = self.get_undo_file_path()
+        if path != ":memory:":
+            self.cfg["last_db_dir"] = os.path.dirname(path)
+            save_config(self.cfg)
         self.refresh_schema()
         self.focus_panel(1)
-        self.set_msg(f"Database opened: {path}")
+        self.set_msg(f"Database opened: {short_path(path)}")
+
+    def load_sql_file(self, path: str) -> None:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError as exc:
+            self.set_msg(f"Cannot read SQL file: {exc}", True)
+            return
+        self.editor.set_text(text)
+        self.last_sql_path = path
+        self.cfg["last_sql_dir"] = os.path.dirname(os.path.abspath(path))
+        self.cfg["last_db_dir"] = os.path.dirname(os.path.abspath(path))
+        save_config(self.cfg)
+        self.focus_panel(3)
+        self.set_msg(f"SQL script loaded: {short_path(path)} · F5 to run")
+
+    def save_sql_file(self) -> None:
+        default = self.last_sql_path or os.path.join(self.cfg.get("last_sql_dir", os.getcwd()), "query.sql")
+        path = self.prompt("Save SQL script to: ", default)
+        if not path:
+            return
+        path = os.path.expanduser(path.strip())
+        if not os.path.isabs(path):
+            path = os.path.abspath(path)
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(self.editor.text)
+        except OSError as exc:
+            self.set_msg(f"Cannot save SQL file: {exc}", True)
+            return
+        self.last_sql_path = path
+        self.cfg["last_sql_dir"] = os.path.dirname(path)
+        save_config(self.cfg)
+        self.set_msg(f"SQL script saved: {short_path(path)}")
 
     def dump(self) -> None:
         if self.db.path == ":memory:":

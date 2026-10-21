@@ -17,7 +17,11 @@
 ## ⚡ Highlights
 
 * **Zero External Dependencies:** Built 100% on the Python 3.8+ Standard Library (`curses`, `sqlite3`, `csv`, `json`). No `pip install` required.
-* **Lazygit-Style 4-Panel Ergonomics:** Seamlessly jump between Schema (`1`), Columns (`2`), SQL Editor (`3`), and Data Grid (`4`). Full-screen zoom toggle (`z`).
+* **Lazygit-Style 4-Panel Ergonomics:** Seamlessly jump between Schema (`1`), Columns (`2`), SQL Editor (`3`), and Data Grid (`4`). Persistent clickable tab bar, full-screen zoom toggle (`z`), and a context-aware shortcut bar.
+* **Simple by Default:** Opens in a clean **one-panel-at-a-time** layout. Press `F2` whenever you want the classic 4-panel quadrant view.
+* **Open SQL Scripts:** Use `Ctrl+O` to browse and load existing `.sql` files directly into the editor; save them back with `Ctrl+S`.
+* **Polished, Discoverable UI:** Row numbers and `PK`/`FK` badges in the data grid, aligned column inspector, contextual status bar, searchable selection menus, and clear modal confirmations.
+* **Open Databases On the Fly:** Press `Ctrl+O` to browse directories with the built-in file picker (mouse or keyboard) and switch database without leaving the TUI.
 * **Bidirectional Foreign Key Navigation:** Traverse relational data effortlessly. Follow outgoing Foreign Keys (`f`) to parent records, inspect incoming relations (`F`), and jump back anytime (`b` / `Backspace`).
 * **Automatic Undo SQL System:** Every data mutation (cell edit, row insert, row delete, table drop, CSV import) automatically generates the exact inverse SQL restoration script (`<database>_undo.sql`). Press `u` to preview and revert.
 * **In-Place Cell Editing & Rich Inspector:** Edit cell values with real data type coercion (`e`). Inspect cells with formatted JSON pretty-printing and binary BLOB hex-dump viewer (`Space`).
@@ -32,24 +36,31 @@
 
 ## 📸 Interface Layout
 
+By default SQLTUI opens in **Simple mode**: one panel at a time, with the `1-4` tabs at the top. Press `F2` to switch to the classic 4-panel layout shown below and back.
+
 ```
-╭─ [1] Objects (5) ───────────────────────╮╭─ [3] SQL Editor ─────────────────────────────╮
-│ ● categories (5)                        ││ SELECT o.id, c.name, o.total_amount          │
-│ ● products (8)                          ││   FROM orders o                              │
-│ ● customers (5)                         ││     JOIN customers c ON o.customer_id = c.id │
-│ ● orders (5)                            ││   WHERE o.total_amount > 500                 │
-│ ● order_items (7)                       ││   ORDER BY o.total_amount DESC;              │
-│ ○ v_customer_orders (view)              ││                                              │
-│ ⚡ idx_orders_cust (index)               ││                                              │
-╰─────────────────────────────────────────╯╰──────────────────────────────────────────────╯
-╭─ [2] Columns (orders) ──────────────────╮╭─ [4] orders · customer_id (INTEGER) [➔ customers.id (f)] ╮
-│ id              INTEGER  🔑 [PK] [NN]   ││ id   customer_id    order_date            total_amount   │
-│ customer_id     INTEGER  ➔ [-> cust.id] ││ 1    1              2026-10-18 10:30:00   3878.90        │
-│ order_date      TEXT                    ││ 2    2              2026-10-19 14:15:00   136.99         │
-│ status          TEXT     [NN]           ││ 3    3              2026-10-20 09:00:00   1299.00        │
-│ total_amount    REAL                    ││ 4    4              2026-10-20 16:45:00   599.99         │
-╰─────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
- [1]Objects [2]Cols [3]SQL [4]Data │ f:FK Jump │ b:Back │ Tab:Cycle │ z:Zoom │ T:Theme │ u:Undo │ ?:Help
+ sqlite_tui  1 Objects  2 Columns  3 SQL  4 Data │ demo.db                        ? Help
+╭── [1] Objects (6) ────────────╮╭── [3] SQL [Ln 4, Col 12] ─────────────────────╮
+│▼ Tables (5)                   ││ 1 SELECT o.id, c.name, o.total_amount         │
+│  ● categories              5  ││ 2   FROM orders o                             │
+│  ● products                8  ││ 3     JOIN customers c ON o.customer_id=c.id  │
+│  ● customers               5  ││▸4   WHERE o.total_amount > 500;               │
+│  ● orders                  5  ││                                               │
+│  ● order_items             7  ││                                               │
+│▼ Views (1)                    │╰───────────────────────────────────────────────╯
+│  ○ v_customer_orders          │╭── [4] orders · customer_id (INTEGER) FK (5) ─╮
+│▼ Indexes (4)                  ││  # id PK# │customer_id FK# │order_date T      │
+│  ⚡ idx_orders_cust            ││  1 1      │1               │2026-10-18 10:30  │
+╰───────────────────────────────╯│  2 2      │2               │2026-10-19 14:15  │
+╭── [2] Columns · orders ───────╮│  3 3      │3               │2026-10-20 09:00  │
+│PK id          INTEGER         │╰───────────────────────────────────────────────╯
+│   customer_id INTEGER → cust… │
+│   order_date  TEXT    =CURREN…│
+│   status      TEXT    ='pend… │
+│   total_amount REAL   =0.0    │
+╰───────────────────────────────╯
+ 1-4 Panels  Enter Open  q SELECT  s Schema  m Menu  / Filter  d DROP      ? Help
+ ● ready · undo available (1)          5 rows · pg 1/1 · demo.db
 ```
 
 ---
@@ -88,7 +99,23 @@ sudo ln -s "$(pwd)/sqlite-tui.py" /usr/local/bin/sqltui
 ./sqlite-tui.py
 ```
 
-### 3. Non-Interactive CLI Query Runner (`-e`)
+### 3. Open a Database or SQL Script From the UI (`Ctrl+O`)
+
+Press `Ctrl+O` (or `m` / `F10` → **Browse & open database or SQL script…**) to open the built-in file browser:
+
+- **Database files** (`.db`, `.sqlite`, `.sqlite3`, `.db3`, `.s3db`, `.sqlite2`) are opened as a connection
+- **SQL scripts** (`.sql`) are loaded into the SQL editor, ready for `F5`
+- `↑` / `↓` or `j` / `k` move, `Enter` / `→` opens a folder or file
+- `←` / `Backspace` goes to the parent folder, `a` shows all files/hidden entries
+- `p` lets you type a path manually, `n` creates a new database file
+- Mouse: click to select, **double-click** to open, wheel to scroll
+- The last visited directory is remembered in the config file
+
+Save the current editor content with `Ctrl+S` (or `F10` → **Save SQL script…**).
+
+Only `.db`, `.sqlite`, `.sqlite3`, `.db3`, `.s3db`, `.sqlite2` and `.sql` files are shown by default; press `a` to display every file.
+
+### 4. Non-Interactive CLI Query Runner (`-e`)
 
 Run queries and output formatted results directly to `stdout` without entering the TUI:
 
@@ -115,7 +142,7 @@ Like navigating the web with hyperlinks, `sqltui` lets you traverse database rel
 * **Follow Foreign Key (`f`):** On any cell pointing to another table (e.g. `customer_id = 1` in `orders`), press `f` to jump straight to `customers WHERE id = 1`.
 * **Find Referencing Rows (`F`):** On a parent record (e.g. customer `Marco Rossi`), press `F` to discover and jump to children records across all referencing tables (`orders`, `reviews`, etc.).
 * **Back Stack (`b` or `Backspace`):** Return to previous tables and views, preserving your exact filters, sorting, and cursor coordinates.
-* **Visual Cues:** FK columns show the `➔` badge in the grid header, and the active column's target is displayed at the top of Panel 4.
+* **Visual Cues:** FK columns show the `FK` badge in the grid header, the active column's target appears in the Panel 4 title, and the row number gutter keeps your place.
 
 ---
 
@@ -133,7 +160,7 @@ Every mutating action generates an inverse compensation script saved to `<databa
 | **UPDATE / DELETE Query** | Restores exact state of affected rows |
 
 * Press `u` at any time to preview and restore the previous state immediately.
-* Open `F10` ➔ `View restore SQL file (Undo Log)…` to audit all generated restore scripts.
+* Open `m` / `F10` ➔ `View restore SQL file (Undo Log)…` to audit all generated restore scripts.
 
 ---
 
@@ -144,14 +171,17 @@ Every mutating action generates an inverse compensation script saved to `<databa
 | Key | Action |
 | :--- | :--- |
 | `1` .. `4` | Jump directly to Panel 1 (Objects), 2 (Columns), 3 (SQL), 4 (Data) |
-| `Tab` / `Shift+Tab` | Cycle focus clockwise / counter-clockwise across panels |
+| `Tab` / `Shift+Tab` | Cycle focus across panels; `Shift+Tab` goes backward (`F6` also cycles forward) |
+| `F2` | Toggle **Simple mode** (one panel) / classic 4-panel layout |
 | `z` | **Toggle Zoom:** Maximize active panel or restore 4-panel layout |
 | `T` | Switch visual theme (Tokyo Night, Nord, Gruvbox, Rosé Pine, Monokai, Classic) |
 | `u` | **Undo:** Restore last database change via generated Undo SQL |
-| `F10` | Open full **Command Menu** |
+| `m` / `F10` | Open full **Command Menu** |
+| `Ctrl + O` | Browse and open a database **or a `.sql` script** (file picker with mouse support) |
+| `Ctrl + S` | Save the SQL editor content to a `.sql` file |
 | `?` or `F1` | Interactive shortcut help screen |
 | `Ctrl + Q` | Quit application |
-| `Mouse` | Click to focus / select, double-click to open/edit, wheel to scroll |
+| `Mouse` | Click tabs/menu items, double-click to open/edit, wheel scrolls; dialog buttons are clickable |
 
 ### Panel [1]: Schema & Objects
 | Key | Action |
@@ -180,9 +210,11 @@ Every mutating action generates an inverse compensation script saved to `<databa
 | `F9` | Execute **statement under cursor** (delimited by `;`) |
 | `F8` | **Smart Autocomplete:** Keywords, functions, tables, and columns |
 | `Ctrl + P` | **Format SQL:** Clean indentation and uppercase keywords |
+| `Ctrl + S` | Save the editor content to a `.sql` file |
 | `Ctrl + Z` / `Ctrl + R` | Undo / Redo text editing |
 | `Ctrl + K` / `Ctrl + Y` | Cut line / Paste line |
 | `Ctrl + W` / `Ctrl + U` | Delete word backward / Delete to start of line |
+| `Tab` | Indent 4 spaces (`Shift+Tab` / `F6` still cycle panels) |
 
 ### Panel [4]: Data & Results Grid
 | Key | Action |
@@ -198,6 +230,9 @@ Every mutating action generates an inverse compensation script saved to `<databa
 | `d` / `Del` | **Delete Row:** Delete active record [with Undo SQL] |
 | `o` | **Sort by Column:** Ascending `▲` ➔ Descending `▼` ➔ Reset |
 | `/` | **Filter / Search:** SQL `WHERE` clause (Table mode) or text search (Query results) |
+| `Esc` | Clear the active filter or result search |
+| `[` / `]` | Previous / next search match |
+| `c` | Clear filters and sorting |
 | `i` | Column statistical analysis and distribution chart |
 | `x` | **Export:** Save view to CSV, JSON, Markdown, TSV, or SQL INSERT statements |
 | `y` | Copy cell value to system clipboard via OSC 52 |

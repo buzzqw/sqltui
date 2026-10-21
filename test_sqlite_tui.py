@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 # Ensure sqlite_tui can be imported
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -284,6 +285,53 @@ class TestDemoDbInitialization(unittest.TestCase):
         self.assertGreater(order_total, 0.0)
 
         db.close()
+
+
+class TestDatabaseBrowser(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite_tui.Db(":memory:")
+        self.app = sqlite_tui.App(MockScreen(), self.db)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_list_open_dir_filters_sqlite_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            os.mkdir(os.path.join(td, "folder"))
+            open(os.path.join(td, "data.sqlite"), "w").close()
+            open(os.path.join(td, "script.sql"), "w").close()
+            open(os.path.join(td, "notes.txt"), "w").close()
+            os.mkdir(os.path.join(td, ".hidden"))
+
+            entries, error = self.app._list_open_dir(td, False)
+            names = [e[0] for e in entries]
+            self.assertEqual(error, "")
+            self.assertIn("folder", names)
+            self.assertIn("data.sqlite", names)
+            self.assertIn("script.sql", names)
+            self.assertNotIn("notes.txt", names)
+            self.assertNotIn(".hidden", names)
+
+            entries, _ = self.app._list_open_dir(td, True)
+            names = [e[0] for e in entries]
+            self.assertIn("notes.txt", names)
+            self.assertIn(".hidden", names)
+
+    def test_resolve_db_path_relative_to_browser_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            resolved = self.app._resolve_db_path("sub/new.db", td)
+            self.assertEqual(resolved, os.path.join(td, "sub", "new.db"))
+
+    def test_load_sql_file_into_editor(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "query.sql")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("SELECT 1;\n")
+            with mock.patch.object(sqlite_tui, "save_config"):
+                self.app.load_sql_file(path)
+            self.assertEqual(self.app.editor.text, "SELECT 1;\n")
+            self.assertEqual(self.app.focus_panel_id, 3)
+            self.assertEqual(self.app.last_sql_path, path)
 
 
 class TestCliExecution(unittest.TestCase):

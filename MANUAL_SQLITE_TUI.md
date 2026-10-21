@@ -18,7 +18,7 @@
    - [Panel 4: Data & Results Grid](#panel-4-data--results-grid)
 6. [Relational Foreign Key Navigation](#6-relational-foreign-key-navigation)
 7. [Automatic Undo SQL System](#7-automatic-undo-sql-system)
-8. [Command Menu (F10) & Advanced Features](#8-command-menu-f10--advanced-features)
+8. [Command Menu (`m` / `F10`) & Advanced Features](#8-command-menu-m--f10--advanced-features)
 9. [Importing, Exporting & CLI Scripting](#9-importing-exporting--cli-scripting)
 10. [Themes & Customization](#10-themes--customization)
 11. [Troubleshooting & FAQ](#11-troubleshooting--faq)
@@ -70,32 +70,54 @@
 ./sqlite-tui.py my_database.db -e "SELECT * FROM orders" --format json
 ```
 
+### Opening another database or SQL script from inside the TUI
+
+Press `Ctrl+O` (or `m` / `F10` → **Browse & open database or SQL script…**) at any time. The built-in file browser lists folders, SQLite files (`.db`, `.sqlite`, `.sqlite3`, `.db3`, `.s3db`, `.sqlite2`) and `.sql` scripts:
+
+- `↑` / `↓` or `j` / `k` move the selection, `Enter` / `→` opens a folder, database or SQL script
+- `←` / `Backspace` goes up one directory, `a` toggles all files (including hidden ones)
+- `p` lets you type a path manually, `n` creates a new database file
+- Mouse: click selects, **double-click** opens, wheel scrolls
+- The last browsed directory is remembered for next time
+
+Selecting a database opens it; selecting a `.sql` file loads it into the SQL editor, ready for `F5`. Use `Ctrl+S` to save the current editor content.
+
+If the selected database path does not exist, the app asks for confirmation before creating it.
+
 ---
 
 ## 3. Interface Architecture & Layout
 
-The screen is structured in 4 main quadrants:
+The screen can show one panel at a time (**Simple mode**, the default) or all four quadrants together. Press `F2` to switch layouts; the diagram below shows the 4-panel view.
 
 ```
-╭─ [1] Objects (4) ───────────────────────╮╭─ [3] SQL Editor ─────────────────────────────╮
-│ ● users (1,450)                         ││ SELECT name, email FROM users WHERE id > 10; │
-│ ● orders (8,230)                        ││                                              │
-│ ○ active_users (view)                   ││                                              │
-│ ⚡ idx_users_email (index)               ││                                              │
-╰─────────────────────────────────────────╯╰──────────────────────────────────────────────╯
-╭─ [2] Columns (orders) ──────────────────╮╭─ [4] orders · customer_id (INTEGER) [➔ customers.id (f)] ╮
-│ id              INTEGER  🔑 [PK] [NN]   ││ id   customer_id    order_date            total_amount   │
-│ customer_id     INTEGER  ➔ [-> cust.id] ││ 1    1              2026-10-18 10:30:00   3878.90        │
-│ order_date      TEXT                    ││ 2    2              2026-10-19 14:15:00   136.99         │
-│ total_amount    REAL                    ││ 3    1              2026-10-20 09:00:00   1299.00        │
-╰─────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯
- [1]Objects [2]Cols [3]SQL [4]Data │ f:FK Jump │ b:Back │ Tab:Cycle │ z:Zoom │ T:Theme │ u:Undo │ ?:Help
+ sqlite_tui  1 Objects  2 Columns  3 SQL  4 Data │ demo.db                        ? Help
+╭── [1] Objects (4) ────────────╮╭── [3] SQL [Ln 2, Col 12] ─────────────────────╮
+│▼ Tables (3)                   ││ 1 SELECT name, email FROM users               │
+│  ● users                1,450 ││ 2   WHERE id > 10;                            │
+│  ● orders               8,230 ││                                               │
+│  ● products               310 ││                                               │
+│▼ Views (1)                    │╰───────────────────────────────────────────────╯
+│  ○ active_users               │╭── [4] orders · customer_id (INTEGER) FK (8) ─╮
+│▼ Indexes (1)                  ││  # id PK# │customer_id FK# │order_date T      │
+│  ⚡ idx_users_email            ││  1 1      │42              │2026-10-18 10:30  │
+╰───────────────────────────────╯│  2 2      │17              │2026-10-19 14:15  │
+╭── [2] Columns · orders ───────╮╰───────────────────────────────────────────────╯
+│PK id          INTEGER         │
+│   customer_id INTEGER → users… │
+│   order_date  TEXT    =CURREN…│
+│   total_amount REAL   =0.0    │
+╰───────────────────────────────╯
+ 1-4 Panels  Enter Open  q SELECT  s Schema  m Menu  / Filter  d DROP      ? Help
+ ● ready · undo available (1)        8,230 rows · pg 1/412 · demo.db
 ```
 
+* **Clickable Top Tab Bar:** Shows all four panels at a glance; the active tab is highlighted and can be clicked with the mouse.
 * **Unicode Rounded Borders:** The active panel is highlighted with bright accent borders according to your chosen theme.
-* **Dynamic Header Badges:** Displays active table, current column name, declared type, primary key marker (`🔑PK`), and foreign key target (`➔ table.col (f)`).
+* **Rich Panel Titles:** Display active table, current column name, declared type, `PK`/`FK` badges, pagination, filters and sort state.
+* **Data Grid Gutter:** Row numbers plus aligned `PK` / `FK` header badges make large result sets easy to scan.
 * **Bottom Context Bar (Row H-2):** Dynamically displays relevant shortcuts for whichever panel currently holds focus.
-* **Status & Notification Bar (Row H-1):** Reports success messages, transaction states, row counts, and detailed error messages in real time.
+* **Status & Notification Bar (Row H-1):** Reports success/error messages on the left and live context (rows, page, filter, position, database) on the right.
 
 ---
 
@@ -109,15 +131,18 @@ These hotkeys are available at all times from any panel:
 | `2` | Jump directly to **Panel 2 (Columns & Table Info)** |
 | `3` | Jump directly to **Panel 3 (SQL Editor)** |
 | `4` | Jump directly to **Panel 4 (Data / Query Results)** |
-| `Tab` | Cycle focus clockwise to next panel |
+| `Tab` | Cycle focus clockwise to next panel (not in SQL editor, where it indents; `Shift+Tab` backward; `F6` forward) |
+| `F2` | Toggle **Simple mode** (one panel at a time) / 4-panel layout |
 | `Shift + Tab` | Cycle focus counter-clockwise to previous panel |
 | `z` | **Toggle Zoom:** Maximize active panel to full screen or restore grid layout |
 | `T` | Open **Visual Theme** selector |
 | `u` | Trigger **Undo SQL** (revert the latest database mutation) |
 | `F1` or `?` | Display interactive Help screen |
-| `F10` | Open **Command Menu** (import, export, transactions, DDL, VACUUM) |
+| `m` / `F10` | Open **Command Menu** (searchable: type to filter actions) |
+| `Ctrl + O` | Browse and open a database **or a `.sql` script** without leaving the TUI |
+| `Ctrl + S` | Save the SQL editor content to a `.sql` file |
 | `Ctrl + Q` | Exit the application |
-| `Mouse` | Click to focus panel or row, double-click to open/edit, wheel to scroll |
+| `Mouse` | Click tabs/menu items, double-click to open/edit, wheel scrolls; dialog buttons are clickable |
 
 ---
 
@@ -145,9 +170,11 @@ Lists all database entities with visual indicator icons and live row counts:
 ### Panel 2: Columns & Structure
 Inspects schema details for the currently active table or view:
 * Column name and declared SQLite storage type (`INTEGER`, `TEXT`, `REAL`, `BLOB`, `NUMERIC`).
-* `🔑 [PK]` badge: Primary key column.
-* `[NN]` badge: Not Null constraint.
-* `[-> table.col]` badge: Foreign key constraint with target table and column.
+* **Aligned layout:** `PK` badge, column name, type, and constraints line up for quick scanning.
+* `PK` badge: Primary key column.
+* `NOT NULL` marker: Not Null constraint.
+* `=default` marker: Declared default value.
+* `→ table.col` badge: Foreign key constraint with target table and column.
 
 #### Hotkeys in Panel 2:
 * `↑` / `↓` or `j` / `k`: Select column.
@@ -175,13 +202,14 @@ A multi-line text editor with SQL syntax highlighting and query runner:
 * `F9`: Execute **only the statement under the cursor** (delimited by `;`).
 * `F8`: Trigger autocomplete popup.
 * `Ctrl + P`: Format and beautify SQL query.
+* `Ctrl + S`: Save the editor content to a `.sql` file.
 * `Ctrl + Z`: Undo text edit in editor.
 * `Ctrl + R`: Redo text edit in editor.
 * `Ctrl + K`: Cut line.
 * `Ctrl + Y`: Paste line.
 * `Ctrl + W`: Delete word backward.
 * `Ctrl + U`: Delete line backward to start.
-* `Tab`: Indent 4 spaces.
+* `Tab`: Indent 4 spaces (`Shift+Tab` / `F6` cycle panels instead).
 
 ---
 
@@ -189,7 +217,8 @@ A multi-line text editor with SQL syntax highlighting and query runner:
 Displays table records or the output of custom SQL queries.
 
 * **Dynamic Columns:** Auto-sized widths based on actual terminal width and cell length.
-* **Header Indicators:** Shows `🔑` for Primary Keys and `➔` for Foreign Keys.
+* **Row Gutter:** Sequential row numbers on the left keep wide result sets easy to follow.
+* **Header Indicators:** Compact `PK` / `FK` badges plus a type glyph (`#` integer, `$` real, `B` blob, `T` text).
 
 #### Hotkeys in Data Grid:
 * `Arrows` / `h j k l`: Cell navigation.
@@ -211,7 +240,9 @@ Displays table records or the output of custom SQL queries.
 * `o`: **Sort by Column** (cycles: Ascending `▲` -> Descending `▼` -> Reset).
 * `/`: **Search / Filter**:
   * In Table mode: prompts for a SQL `WHERE` clause (e.g. `age > 25 AND active = 1`).
-  * In Query Results mode: in-memory string search across cells (`n`/`N` for next/previous match).
+  * In Query Results mode: in-memory string search across cells (`[` / `]` for previous/next match).
+* `Esc`: Clear the active filter or result search.
+* `c`: Clear both filters and sorting.
 * `i`: Statistical analysis of the active column.
 * `y`: Copy cell content to system clipboard via OSC 52.
 * `x`: Export current view (CSV, TSV, JSON, SQL INSERT, Markdown).
@@ -266,13 +297,15 @@ Every mutating operation generates the **exact inverse SQL compensation command*
 1. Press `u` at any time.
 2. A confirmation prompt displays the action to be reverted (e.g. `Restore «Delete row from users» using Undo SQL?`).
 3. Press `y` to apply. The database immediately reverts and the grid reloads.
-4. To view the complete history of recorded undo statements, open `F10` -> `View restore SQL file (Undo Log)…`.
+4. To view the complete history of recorded undo statements, open `m` / `F10` -> `View restore SQL file (Undo Log)…`.
 
 ---
 
-## 8. Command Menu (F10) & Advanced Features
+## 8. Command Menu (`m` / `F10`) & Advanced Features
 
-Pressing `F10` opens the command palette:
+Pressing `m` or `F10` opens the command palette. Start typing to filter the actions, use `↑`/`↓` to move, `Enter` to run, and `Esc` to clear the filter or close:
+
+> **Tip:** press `Ctrl+O` from any panel to browse databases and `.sql` scripts, and `Ctrl+S` to save the editor.
 
 1. **Execute all (F5)** / **Execute current statement (F9)**
 2. **Format SQL query in editor (Ctrl+P)**
@@ -281,7 +314,7 @@ Pressing `F10` opens the command palette:
 5. **Navigate back in history (b)**
 6. **Undo last change (Undo SQL)…** (`u`)
 7. **View restore SQL file (Undo Log)…**
-8. **Switch visual theme (T)…**
+8. **Switch visual theme (T)…** / **Toggle zoom on active panel (z)**
 9. **Open another database…**
 10. **Load interactive demo database…**
 11. **Query history…**
@@ -302,7 +335,7 @@ Pressing `F10` opens the command palette:
 
 ## 9. Importing, Exporting & CLI Scripting
 
-### Interactive Export (`x` in Panel 4 or via `F10`)
+### Interactive Export (`x` in Panel 4 or via `m` / `F10`)
 Export tables or query results into 5 formats:
 * **CSV:** RFC 4180 standard comma-separated values.
 * **TSV:** Tab-separated values (ideal for pasting into spreadsheet tools).
@@ -319,7 +352,7 @@ Run queries directly from bash scripts and automation pipelines:
 ./sqlite-tui.py prod.db -e "SELECT name, price FROM products" --format csv > products.csv
 ```
 
-### Importing CSV/TSV (`F10` -> Import CSV)
+### Importing CSV/TSV (`m` / `F10` -> Import CSV)
 * **Auto-Delimiter Detection:** Automatically identifies commas (`,`), semicolons (`;`), tabs (`\t`), or pipes (`|`).
 * **Auto-Create Table:** If target table does not exist, automatically creates it based on CSV headers.
 
