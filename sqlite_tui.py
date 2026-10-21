@@ -23,6 +23,7 @@ import argparse
 import base64
 import csv
 import curses
+import functools
 import io
 import json
 import locale
@@ -277,12 +278,15 @@ def save_config(cfg: dict) -> None:
         pass
 
 
+@functools.lru_cache(maxsize=512)
 def char_width(c: str) -> int:
     return 2 if unicodedata.east_asian_width(c) in ("F", "W") else 1
 
 
 def str_width(s: str) -> int:
-    """Returns actual display width in terminal columns."""
+    """Returns actual display width in terminal columns (ultra-fast ASCII path)."""
+    if s.isascii():
+        return len(s)
     return sum(char_width(c) for c in s)
 
 
@@ -290,6 +294,10 @@ def fit_str(s: str, max_w: int) -> str:
     """Clips the string so its visual width is <= max_w, appending '~' if clipped."""
     if max_w <= 0:
         return ""
+    if s.isascii():
+        if len(s) <= max_w:
+            return s
+        return s[:max_w - 1] + "~"
     if str_width(s) <= max_w:
         return s
     cur_w = 0
@@ -307,7 +315,7 @@ def fit_str(s: str, max_w: int) -> str:
 
 def pad_str(s: str, target_w: int, align: str = "left") -> str:
     """Pads string with spaces according to terminal display width."""
-    w = str_width(s)
+    w = len(s) if s.isascii() else str_width(s)
     if w >= target_w:
         return s
     pad = " " * (target_w - w)
@@ -315,7 +323,7 @@ def pad_str(s: str, target_w: int, align: str = "left") -> str:
 
 
 def quote_ident(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
+    return f'"{name.replace(chr(34), chr(34) * 2)}"' if '"' in name else f'"{name}"'
 
 
 def sql_literal(v: Any) -> str:
@@ -326,7 +334,8 @@ def sql_literal(v: Any) -> str:
         return str(v)
     if isinstance(v, bytes):
         return f"X'{v.hex()}'"
-    return "'" + str(v).replace("'", "''") + "'"
+    s = str(v)
+    return "'" + s.replace("'", "''") + "'" if "'" in s else f"'{s}'"
 
 
 def split_statements(sql: str) -> list[tuple[int, int]]:
@@ -394,12 +403,15 @@ def statement_at(sql: str, offset: int) -> Optional[tuple[int, int]]:
 
 def fmt_value(v: Any) -> str:
     if v is None:
-        s = "NULL"
-    elif isinstance(v, bytes):
-        s = f"<blob {len(v)} B>"
-    else:
-        s = str(v)
-    return s.replace("\r", "").replace("\n", "\\n").replace("\t", "\\t")
+        return "NULL"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, bytes):
+        return f"<blob {len(v)} B>"
+    s = str(v)
+    if "\r" in s or "\n" in s or "\t" in s:
+        return s.replace("\r", "").replace("\n", "\\n").replace("\t", "\\t")
+    return s
 
 
 def preview_len(v: Any, max_len: int = MAX_COL_WIDTH) -> int:
@@ -407,10 +419,12 @@ def preview_len(v: Any, max_len: int = MAX_COL_WIDTH) -> int:
     if v is None:
         return 4  # "NULL"
     if isinstance(v, bytes):
-        return len(f"<blob {len(v)} B>")
+        return min(max_len, 12 + len(str(len(v))))
+    if isinstance(v, (int, float)):
+        return min(max_len, len(str(v)))
     s = str(v)
-    if len(s) >= max_len:
-        return max_len
+    if s.isascii():
+        return min(max_len, len(s))
     w = 0
     for ch in s:
         w += 2 if (ch in "\r\n\t" or unicodedata.east_asian_width(ch) in ("F", "W")) else 1
@@ -674,8 +688,11 @@ def draw_box(scr, y: int, x: int, h: int, w: int, title: str = "", active: bool 
         put(scr, y, x, f"{top_left}{horiz * (w - 2)}{top_right}", border_attr)
 
     for row in range(1, h - 1):
-        put(scr, y + row, x, vert, border_attr)
-        put(scr, y + row, x + w - 1, vert, border_attr)
+        try:
+            scr.addstr(y + row, x, vert, border_attr)
+            scr.addstr(y + row, x + w - 1, vert, border_attr)
+        except curses.error:
+            pass
 
     put(scr, y + h - 1, x, f"{bot_left}{horiz * (w - 2)}{bot_right}", border_attr)
 
@@ -691,7 +708,18 @@ def draw_segments(scr, y: int, x: int, w: int, segs: list[tuple[str, int]], left
         pos = end
 
 
+_TOKEN_CACHE: dict[tuple[str, int], list[tuple[str, int]]] = {}
+
+
 def tokenize(line: str) -> list[tuple[str, int]]:
+    if not line:
+        return []
+    theme_attr = A.get("kw", 0)
+    cache_key = (line, theme_attr)
+    cached = _TOKEN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     segs = []
     pos = 0
     for m in TOKEN_RE.finditer(line):
@@ -713,6 +741,10 @@ def tokenize(line: str) -> list[tuple[str, int]]:
         pos = m.end()
     if pos < len(line):
         segs.append((line[pos:], 0))
+
+    if len(_TOKEN_CACHE) > 1024:
+        _TOKEN_CACHE.clear()
+    _TOKEN_CACHE[cache_key] = segs
     return segs
 
 
@@ -751,6 +783,8 @@ class Db:
         self.path = path
         self.readonly = readonly
         self._keys: dict[str, KeyInfo] = {}
+        self._cols: dict[str, list[Column]] = {}
+        self._fks: dict[str, list[tuple]] = {}
         if readonly and path != ":memory:":
             uri = pathlib.Path(path).resolve().as_uri() + "?mode=ro"
             self.conn = sqlite3.connect(uri, uri=True, isolation_level=None)
@@ -763,15 +797,27 @@ class Db:
 
     def forget(self) -> None:
         self._keys.clear()
+        self._cols.clear()
+        self._fks.clear()
 
     def schema(self) -> list[tuple]:
         return self.conn.execute(
             f"SELECT type, name, tbl_name, sql FROM sqlite_master WHERE {USER_OBJECTS} "
             "ORDER BY name COLLATE NOCASE").fetchall()
 
+    def foreign_keys(self, table: str) -> list[tuple]:
+        if table not in self._fks:
+            try:
+                self._fks[table] = self.conn.execute(f"PRAGMA foreign_key_list({quote_ident(table)})").fetchall()
+            except sqlite3.Error:
+                self._fks[table] = []
+        return self._fks[table]
+
     def columns(self, table: str) -> list[Column]:
-        rows = self.conn.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall()
-        return [Column(r[1], r[2], r[3], r[4], r[5]) for r in rows]
+        if table not in self._cols:
+            rows = self.conn.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall()
+            self._cols[table] = [Column(r[1], r[2], r[3], r[4], r[5]) for r in rows]
+        return self._cols[table]
 
     def _has_rowid(self, table: str) -> bool:
         try:
@@ -849,9 +895,10 @@ class Db:
         try:
             cur = self.conn.execute(query)
             stmts = []
-            for r in cur.fetchall():
+            for r in cur:
                 val_str = ", ".join(sql_literal(v) for v in r)
                 stmts.append(f"INSERT INTO {quote_ident(table)} ({col_str}) VALUES ({val_str});")
+            cur.close()
             return stmts
         except sqlite3.Error:
             return []
@@ -1327,7 +1374,7 @@ class ColumnList:
         self.cy = self.top = 0
         try:
             self.cols = db.columns(table)
-            self.fks = db.conn.execute(f"PRAGMA foreign_key_list({quote_ident(table)})").fetchall()
+            self.fks = db.foreign_keys(table)
         except sqlite3.Error:
             self.cols = []
             self.fks = []
@@ -1552,8 +1599,10 @@ class Grid:
                 cw = self.widths[i]
                 v = row[i]
                 s = fmt_value(v)
-                fitted = fit_str(s, cw)
-                padded = pad_str(fitted, cw)
+                if s.isascii():
+                    padded = s[:cw].ljust(cw)
+                else:
+                    padded = pad_str(fit_str(s, cw), cw)
                 is_match = bool(self.search_query and self.search_query in str(v).lower())
                 attr = A["null"] if v is None else 0
                 if is_match:
@@ -1621,16 +1670,23 @@ class Sidebar:
         self.cy = self.top = 0
         self.h = 10
         self.filter = ""
+        self._cached_rows: Optional[list[tuple[str, str]]] = None
+
+    def invalidate(self) -> None:
+        self._cached_rows = None
 
     def rows(self) -> list[tuple[str, str]]:
+        if self._cached_rows is not None:
+            return self._cached_rows
         out = []
         f = self.filter.lower()
         for title, kind, names in self.groups:
-            items = [n for n in names if f in n.lower()]
+            items = [n for n in names if f in n.lower()] if f else names
             if not items:
                 continue
             out.append(("hdr", f"{title} ({len(items)})"))
             out.extend((kind, n) for n in items)
+        self._cached_rows = out
         return out
 
     def move(self, delta: int, rows: list[tuple[str, str]]) -> None:
@@ -2219,6 +2275,7 @@ class App:
             ("Indexes", "index", groups["index"]),
             ("Triggers", "trigger", groups["trigger"]),
         ]
+        self.side.invalidate()
         self.side.table_counts = {}
         for t in groups["table"]:
             try:
@@ -2277,9 +2334,11 @@ class App:
             f = self.prompt("Filter objects: ", s.filter)
             if f is not None:
                 s.filter = f.strip()
+                s.invalidate()
                 s.cy = 0
         elif key == KEY_ESC:
             s.filter = ""
+            s.invalidate()
         elif key == "r":
             self.refresh_schema()
             self.set_msg("Schema and row counts updated")
@@ -2360,23 +2419,29 @@ class App:
     def calc_column_stats(self, table: str, col: str) -> dict[str, Any]:
         q_tbl = quote_ident(table)
         q_col = quote_ident(col)
-        total = self.db.conn.execute(f"SELECT COUNT(*) FROM {q_tbl}").fetchone()[0]
-        non_null = self.db.conn.execute(f"SELECT COUNT({q_col}) FROM {q_tbl}").fetchone()[0]
+        total, non_null, distinct, min_val, max_val, avg_val = 0, 0, 0, None, None, None
+        try:
+            r = self.db.conn.execute(
+                f"SELECT COUNT(*), COUNT({q_col}), COUNT(DISTINCT {q_col}), "
+                f"MIN({q_col}), MAX({q_col}), AVG({q_col}) FROM {q_tbl}"
+            ).fetchone()
+            total, non_null, distinct, min_val, max_val, avg_val = r
+        except sqlite3.Error:
+            try:
+                r = self.db.conn.execute(
+                    f"SELECT COUNT(*), COUNT({q_col}), COUNT(DISTINCT {q_col}), "
+                    f"MIN({q_col}), MAX({q_col}) FROM {q_tbl}"
+                ).fetchone()
+                total, non_null, distinct, min_val, max_val = r
+            except sqlite3.Error:
+                pass
         nulls = total - non_null
-        distinct = self.db.conn.execute(f"SELECT COUNT(DISTINCT {q_col}) FROM {q_tbl}").fetchone()[0]
 
         decl_type = ""
         for c in self.db.columns(table):
             if c.name.lower() == col.lower():
                 decl_type = c.type
                 break
-
-        min_val, max_val, avg_val = None, None, None
-        try:
-            r = self.db.conn.execute(f"SELECT MIN({q_col}), MAX({q_col}), AVG({q_col}) FROM {q_tbl} WHERE {q_col} IS NOT NULL").fetchone()
-            min_val, max_val, avg_val = r[0], r[1], r[2]
-        except sqlite3.Error:
-            pass
 
         top_rows = []
         try:
@@ -2605,12 +2670,8 @@ class App:
             return
 
         candidates = []
-        for (tbl_name,) in self.db.conn.execute(f"SELECT name FROM sqlite_master WHERE type = 'table' AND {USER_OBJECTS}").fetchall():
-            try:
-                fks = self.db.conn.execute(f"PRAGMA foreign_key_list({quote_ident(tbl_name)})").fetchall()
-            except sqlite3.Error:
-                continue
-            for fk in fks:
+        for tbl_name in self.table_names:
+            for fk in self.db.foreign_keys(tbl_name):
                 if fk[2].lower() == self.table.lower():
                     ref_to = fk[4] or (self.key.keys[0][0] if self.key.keys else "id")
                     if ref_to.lower() == pk_col.lower():
@@ -2718,11 +2779,7 @@ class App:
         off = 1 if self.key.extra else 0
         col_types = {c.name: c.type for c in self.table_cols}
         pks = {c.name for c in self.table_cols if c.pk}
-        fks = []
-        try:
-            fks = self.db.conn.execute(f"PRAGMA foreign_key_list({quote_ident(self.table)})").fetchall()
-        except sqlite3.Error:
-            pass
+        fks = self.db.foreign_keys(self.table)
         self.grid.set_data(cols[off:], [r[off:] for r in raw], keep, col_types, pks, fks)
         self.grid.sort = (self.order, self.desc)
         self.keyvals = [tuple(r[i] for _, i in self.key.keys) for r in raw]
