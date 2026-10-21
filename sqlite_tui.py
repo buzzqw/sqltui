@@ -6,7 +6,7 @@ Zero external dependencies: uses only Python standard library (curses and sqlite
 
 Usage:
     python3 sqlite_tui.py [database.db] [--readonly]
-    ./sqlite-tui.py [database.db] [--readonly]
+    ./sqlite_tui.py [database.db] [--readonly]
 
 Inside the application:
     1..4     jump directly between panels

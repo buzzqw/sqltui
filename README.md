@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🗄️ SQLTUI (`sqlite-tui`)
+# 🗄️ SQLTUI (`sqlite_tui.py`)
 
 **Fast, keyboard-driven terminal SQLite explorer and editor.**  
 *Heavily inspired by [lazygit](https://github.com/jesseduffield/lazygit).*
@@ -74,29 +74,29 @@ By default SQLTUI opens in **Simple mode**: one panel at a time, with the `1-4` 
 ```bash
 git clone https://github.com/buzzqw/sqltui.git
 cd sqltui
-chmod +x sqlite-tui.py
+chmod +x sqlite_tui.py
 ```
 
 Optional: Install system-wide or add to your `$PATH`:
 
 ```bash
-sudo ln -s "$(pwd)/sqlite-tui.py" /usr/local/bin/sqltui
+sudo ln -s "$(pwd)/sqlite_tui.py" /usr/local/bin/sqltui
 ```
 
 ### 2. Usage Examples
 
 ```bash
 # Launch interactive demo database (test FK navigation and features instantly)
-./sqlite-tui.py --demo
+./sqlite_tui.py --demo
 
 # Open an existing SQLite database
-./sqlite-tui.py production.db
+./sqlite_tui.py production.db
 
 # Open in read-only mode (prevents accidental writes or drops)
-./sqlite-tui.py production.db --readonly
+./sqlite_tui.py production.db --readonly
 
 # Open an in-memory scratchpad
-./sqlite-tui.py
+./sqlite_tui.py
 ```
 
 ### 3. Open a Database or SQL Script From the UI (`Ctrl+O`)
@@ -121,16 +121,16 @@ Run queries and output formatted results directly to `stdout` without entering t
 
 ```bash
 # Formatted Unicode ASCII Table (default)
-./sqlite-tui.py --demo -e "SELECT * FROM v_customer_orders" --format table
+./sqlite_tui.py --demo -e "SELECT * FROM v_customer_orders" --format table
 
 # Markdown Table (ready for GitHub PRs and docs)
-./sqlite-tui.py --demo -e "SELECT id, name, price, stock FROM products LIMIT 5" --format md
+./sqlite_tui.py --demo -e "SELECT id, name, price, stock FROM products LIMIT 5" --format md
 
 # Structured JSON Array
-./sqlite-tui.py --demo -e "SELECT * FROM customers" --format json > customers.json
+./sqlite_tui.py --demo -e "SELECT * FROM customers" --format json > customers.json
 
 # Standard CSV / TSV
-./sqlite-tui.py --demo -e "SELECT * FROM orders" --format csv > orders.csv
+./sqlite_tui.py --demo -e "SELECT * FROM orders" --format csv > orders.csv
 ```
 
 ---

@@ -1,4 +1,4 @@
-# User Manual: SQLite TUI (`sqlite-tui.py`)
+# User Manual: SQLite TUI (`sqlite_tui.py`)
 
 > **Modern, lightweight, zero-dependency SQLite terminal client.**  
 > Inspired by *lazygit*, built for speed, visual clarity, and high productivity over local and remote SSH sessions.
@@ -49,25 +49,25 @@
 
 ```bash
 # Open an existing SQLite database
-./sqlite-tui.py my_database.db
+./sqlite_tui.py my_database.db
 
 # Launch with interactive relational demo e-commerce database
-./sqlite-tui.py --demo
+./sqlite_tui.py --demo
 
 # Open in read-only mode (prevents accidental mutations)
-./sqlite-tui.py my_database.db --readonly
+./sqlite_tui.py my_database.db --readonly
 # Or shorthand:
-./sqlite-tui.py my_database.db -r
+./sqlite_tui.py my_database.db -r
 
 # Launch an in-memory database (:memory:) for testing or scratchpad
-./sqlite-tui.py
+./sqlite_tui.py
 
 # Execute SQL query non-interactively and output formatted table to stdout
-./sqlite-tui.py my_database.db -e "SELECT * FROM users LIMIT 10" --format table
+./sqlite_tui.py my_database.db -e "SELECT * FROM users LIMIT 10" --format table
 
 # Export query result directly to Markdown or JSON from the command line
-./sqlite-tui.py my_database.db -e "SELECT * FROM orders" --format md
-./sqlite-tui.py my_database.db -e "SELECT * FROM orders" --format json
+./sqlite_tui.py my_database.db -e "SELECT * FROM orders" --format md
+./sqlite_tui.py my_database.db -e "SELECT * FROM orders" --format json
 ```
 
 ### Opening another database or SQL script from inside the TUI
@@ -346,10 +346,10 @@ Export tables or query results into 5 formats:
 ### Non-Interactive CLI Query Runner (`-e`)
 Run queries directly from bash scripts and automation pipelines:
 ```bash
-./sqlite-tui.py prod.db -e "SELECT name, price FROM products" --format table
-./sqlite-tui.py prod.db -e "SELECT name, price FROM products" --format md
-./sqlite-tui.py prod.db -e "SELECT name, price FROM products" --format json > products.json
-./sqlite-tui.py prod.db -e "SELECT name, price FROM products" --format csv > products.csv
+./sqlite_tui.py prod.db -e "SELECT name, price FROM products" --format table
+./sqlite_tui.py prod.db -e "SELECT name, price FROM products" --format md
+./sqlite_tui.py prod.db -e "SELECT name, price FROM products" --format json > products.json
+./sqlite_tui.py prod.db -e "SELECT name, price FROM products" --format csv > products.csv
 ```
 
 ### Importing CSV/TSV (`m` / `F10` -> Import CSV)
@@ -386,14 +386,14 @@ echo $LANG
 ### 2. How to try the application immediately without a database?
 Run with the `--demo` flag:
 ```bash
-./sqlite-tui.py --demo
+./sqlite_tui.py --demo
 ```
 This launches a complete relational e-commerce database in memory with customers, orders, items, products, categories, views, and JSON attributes.
 
 ### 3. How to open in read-only mode?
 Use the `-r` or `--readonly` flag:
 ```bash
-./sqlite-tui.py production.db --readonly
+./sqlite_tui.py production.db --readonly
 ```
 All mutations (cell edits, row insertions, drops, writes) will be prevented at the SQLite connection level.
 
