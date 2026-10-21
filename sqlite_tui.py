@@ -2643,7 +2643,7 @@ class App:
             s.cy = 0; s.move(1, rows)
         elif key == curses.KEY_END:
             s.cy = max(0, len(rows) - 1); s.move(-1, rows)
-        elif key in KEY_ENTER:
+        elif key in KEY_ENTER or key == " ":
             sel = s.selected()
             if sel and sel[0] in ("table", "view"):
                 self.open_table(sel[1])

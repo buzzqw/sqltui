@@ -17,11 +17,10 @@
 ## ⚡ Highlights
 
 * **Zero External Dependencies:** Built 100% on the Python 3.8+ Standard Library (`curses`, `sqlite3`, `csv`, `json`). No `pip install` required.
-* **Lazygit-Style 4-Panel Ergonomics:** Seamlessly jump between Schema (`1`), Columns (`2`), SQL Editor (`3`), and Data Grid (`4`). Persistent clickable tab bar, full-screen zoom toggle (`z`), and a context-aware shortcut bar.
 * **Simple by Default:** Opens in a clean **one-panel-at-a-time** layout. Press `F2` whenever you want the classic 4-panel quadrant view.
-* **Open SQL Scripts:** Use `Ctrl+O` to browse and load existing `.sql` files directly into the editor; save them back with `Ctrl+S`.
+* **Built-in File Browser (`Ctrl+O`):** Browse folders and open SQLite databases (`.db`, `.sqlite`, …) or existing **`.sql` scripts** without leaving the TUI. Save the editor with `Ctrl+S`.
+* **Lazygit-Style 4-Panel Ergonomics:** When you need everything at once, jump between Schema (`1`), Columns (`2`), SQL Editor (`3`), and Data Grid (`4`), with clickable tabs and zoom (`z`).
 * **Polished, Discoverable UI:** Row numbers and `PK`/`FK` badges in the data grid, aligned column inspector, contextual status bar, searchable selection menus, and clear modal confirmations.
-* **Open Databases On the Fly:** Press `Ctrl+O` to browse directories with the built-in file picker (mouse or keyboard) and switch database without leaving the TUI.
 * **Bidirectional Foreign Key Navigation:** Traverse relational data effortlessly. Follow outgoing Foreign Keys (`f`) to parent records, inspect incoming relations (`F`), and jump back anytime (`b` / `Backspace`).
 * **Automatic Undo SQL System:** Every data mutation (cell edit, row insert, row delete, table drop, CSV import) automatically generates the exact inverse SQL restoration script (`<database>_undo.sql`). Press `u` to preview and revert.
 * **In-Place Cell Editing & Rich Inspector:** Edit cell values with real data type coercion (`e`). Inspect cells with formatted JSON pretty-printing and binary BLOB hex-dump viewer (`Space`).
@@ -29,14 +28,34 @@
 * **SQL Editor with Autocomplete & Prettifier:** Multi-line text editor with real-time syntax highlighting, intelligent auto-completion (`F8`), statement execution (`F9`), script execution (`F5`), and SQL query formatting (`Ctrl+P`).
 * **Interactive Demo Mode:** Spin up a rich, relational e-commerce mock database on the fly (`--demo` / `--mock`).
 * **CLI Query Runner & Exporter:** Execute SQL queries directly from the command line (`-e`) and print formatted output in Unicode tables, Markdown, JSON, CSV, TSV, or SQL inserts.
-* **SSH & Mouse Friendly:** Runs smoothly over remote SSH connections with full mouse support (click to focus, double-click to open/edit, scroll wheel) and OSC 52 clipboard copying (`y`).
+* **SSH & Mouse Friendly:** Runs smoothly over remote SSH connections with full mouse support (click tabs and menu items, double-click to open/edit, wheel to scroll) and OSC 52 clipboard copying (`y`).
 * **6 Built-in Visual Themes:** Tokyo Night, Nord, Gruvbox, Rosé Pine, Monokai, and Classic Terminal (`T`).
 
 ---
 
 ## 📸 Interface Layout
 
-By default SQLTUI opens in **Simple mode**: one panel at a time, with the `1-4` tabs at the top. Press `F2` to switch to the classic 4-panel layout shown below and back.
+By default SQLTUI opens in **Simple mode**: one panel at a time, with the `1-4` tabs at the top. Press `F2` to switch to the classic 4-panel layout and back; the choice is remembered.
+
+### Simple mode (default)
+
+```
+ sqlite_tui  1 Objects  2 Columns  3 SQL  4 Data                    ? Help
+╭── [1] Objects (6) ──────────────────────────────────────────────────────╮
+│▼ Tables (5)                                                             │
+│  ● categories                                                       5   │
+│  ● customers                                                        5   │
+│  ● order_items                                                      7   │
+│  ● orders                                                           5   │
+│  ● products                                                         8   │
+│▼ Views (1)                                                              │
+│  ○ v_customer_orders                                                    │
+╰─────────────────────────────────────────────────────────────────────────╯
+ Enter Open  q SELECT  / Filter  Ctrl+O Open DB/SQL  F2 Layout      ? Help
+ ● Simple mode · Ctrl+O open DB/SQL · F2 layout         11 objects · demo.db
+```
+
+### Classic 4-panel mode (`F2`)
 
 ```
  sqlite_tui  1 Objects  2 Columns  3 SQL  4 Data │ demo.db                        ? Help
@@ -173,7 +192,7 @@ Every mutating action generates an inverse compensation script saved to `<databa
 | `1` .. `4` | Jump directly to Panel 1 (Objects), 2 (Columns), 3 (SQL), 4 (Data) |
 | `Tab` / `Shift+Tab` | Cycle focus across panels; `Shift+Tab` goes backward (`F6` also cycles forward) |
 | `F2` | Toggle **Simple mode** (one panel) / classic 4-panel layout |
-| `z` | **Toggle Zoom:** Maximize active panel or restore 4-panel layout |
+| `z` | **Toggle Zoom:** maximize/restore the active panel in 4-panel mode |
 | `T` | Switch visual theme (Tokyo Night, Nord, Gruvbox, Rosé Pine, Monokai, Classic) |
 | `u` | **Undo:** Restore last database change via generated Undo SQL |
 | `m` / `F10` | Open full **Command Menu** |
